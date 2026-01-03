@@ -1,98 +1,143 @@
-# TASK-03: Create AgentAdapter Bridge Layer
+# TASK-03: Update agentExecutor to Use Direct Session Imports
 
 ## Summary
 
-Create an adapter layer that bridges the orchestrator's session expectations with opencode's direct session/agent module calls. This abstraction allows the orchestrator to work without HTTP/SDK calls.
+Modify the orchestrator's agentExecutor to use opencode's Session and SessionPrompt modules directly, replacing the SDK Client calls.
 
 ## Context
 
-The flomaster-prototype orchestrator was designed to work with the opencode SDK (HTTP client). In the forked opencode, we have direct access to the session and agent modules. Instead of modifying the orchestrator extensively, we create an adapter that presents the same interface the orchestrator expects but uses direct module calls internally.
-
-### Why an Adapter?
-
-1. **Minimal orchestrator changes** - Only the agentExecutor needs updating
-2. **Clean abstraction** - Separates orchestrator logic from opencode internals
-3. **Testability** - Easy to mock for unit tests
-4. **Future flexibility** - Could switch back to SDK if needed
+The agentExecutor is the only place in the orchestrator that interacts with the AI/LLM layer. Instead of going through an SDK or adapter, we'll call opencode's session modules directly. This is the core integration that makes the orchestrator work with opencode.
 
 ## Scope
 
 ### In Scope
 
-- Create `src/orchestrator/adapter/agent-adapter.ts`
-- Implement session creation via `Session.create()`
-- Implement message sending via `SessionPrompt.prompt()`
-- Implement streaming via event subscription
-- Implement session cleanup
-- Handle `Instance.provide()` context requirement
-- Export adapter from orchestrator barrel
+- Import `Session` from `../../session/index.js`
+- Import `SessionPrompt` from `../../session/prompt.js`
+- Import `Instance` from `../../project/instance.js`
+- Wrap session operations in `Instance.provide()`
+- Replace `client.session.create()` with `Session.create()`
+- Replace `session.stream()` with `SessionPrompt.prompt()`
+- Handle response/streaming appropriately
+- Update `StepExecutorRegistry` dependencies type
+- Update `engine/factory.ts` to not require Client
 
 ### Out of Scope
 
-- Modifying existing opencode session/agent code
-- Changing the orchestrator's interface expectations
-- Implementing all SDK features (only what agentExecutor needs)
+- Changing the executor's input/output interface
+- Modifying other executors
+- Adding new functionality
 
-## Interface Design
+## Implementation Approach
 
+### Before (SDK-based)
 ```typescript
-// src/orchestrator/adapter/agent-adapter.ts
+import { Client } from '../../../client/client.js';
 
-export interface AgentAdapterConfig {
-  directory: string;
-  model?: { providerID: string; modelID: string };
-  agent?: string;
-}
-
-export interface AgentSession {
-  id: string;
-
-  /** Send a message and get response */
-  chat(message: string, options?: ChatOptions): Promise<ChatResponse>;
-
-  /** Send a message and stream response */
-  stream(message: string, options?: StreamOptions): AsyncIterable<StreamEvent>;
-
-  /** Inject context without response */
-  injectContext(context: string): Promise<void>;
-
-  /** Close the session */
-  close(): Promise<void>;
-}
-
-export interface AgentAdapter {
-  /** Create a new session for workflow execution */
-  createSession(config: SessionConfig): Promise<AgentSession>;
+export function createAgentExecutor(client: Client): StepExecutor<'Agent'> {
+  return {
+    execute: async (context) => {
+      const session = await client.session.create({ title: workflowId });
+      const response = await session.stream(builtPrompt, { tools, model });
+      // ... handle streaming
+      await session.close();
+    }
+  };
 }
 ```
 
-## OpenCode Integration Points
+### After (Direct imports)
+```typescript
+import { Session } from '../../../session/index.js';
+import { SessionPrompt } from '../../../session/prompt.js';
+import { Instance } from '../../../project/instance.js';
+import { Log } from '../../../util/log.js';
 
-| Adapter Method | OpenCode Module | Function |
-|----------------|-----------------|----------|
-| `createSession()` | `session/index.ts` | `Session.create()` |
-| `session.chat()` | `session/prompt.ts` | `SessionPrompt.prompt()` |
-| `session.stream()` | `session/prompt.ts` | `SessionPrompt.prompt()` + Bus events |
-| `session.injectContext()` | `session/prompt.ts` | `SessionPrompt.prompt({ noReply: true })` |
-| `session.close()` | `session/index.ts` | `Session.delete()` |
+const log = Log.create({ service: 'AgentExecutor' });
+
+export function createAgentExecutor(directory: string): StepExecutor<'Agent'> {
+  return {
+    execute: async (context) => {
+      return Instance.provide({
+        directory,
+        fn: async () => {
+          const session = await Session.create({ title: workflowId });
+
+          const result = await SessionPrompt.prompt({
+            sessionID: session.id,
+            parts: [{ type: 'text', text: builtPrompt }],
+            model: { providerID, modelID },
+            agent: 'build', // or configurable
+          });
+
+          // Extract response from result
+          return {
+            response: extractTextFromResult(result),
+            toolCalls: extractToolCalls(result),
+          };
+        }
+      });
+    }
+  };
+}
+```
+
+## Key OpenCode APIs to Use
+
+| Operation | OpenCode Function | Location |
+|-----------|-------------------|----------|
+| Create session | `Session.create({ title, parentID? })` | `session/index.ts:126` |
+| Send message | `SessionPrompt.prompt({ sessionID, parts, model, agent })` | `session/prompt.ts:150` |
+| Context wrapper | `Instance.provide({ directory, fn })` | `project/instance.ts:17` |
+| Delete session | `Session.delete(sessionID)` | `session/index.ts` |
+
+## Response Handling
+
+OpenCode's `SessionPrompt.prompt()` returns a `MessageV2.WithParts` which contains:
+- `info`: Message metadata (id, role, sessionID, timestamps)
+- `parts`: Array of parts (text, tool calls, reasoning, etc.)
+
+We need to extract:
+1. Text response from text parts
+2. Tool call results from tool parts
 
 ## Success Criteria
 
-- [ ] `agent-adapter.ts` created with full interface implementation
-- [ ] Adapter handles `Instance.provide()` context correctly
-- [ ] Unit tests pass for adapter methods
+- [ ] agentExecutor uses direct Session/SessionPrompt imports
+- [ ] No imports from `client/` or SDK
+- [ ] `Instance.provide()` wraps all session operations
+- [ ] Agent steps execute and return responses
+- [ ] Tool calls are captured correctly
 - [ ] `bun turbo typecheck` passes
+- [ ] agentExecutor tests pass (may need updates)
 
 ## Dependencies
 
-- TASK-01 and TASK-02 must be completed first
+- TASK-02 must be completed first
 
-## Files to Create
+## Files to Modify
 
 ```
-packages/opencode/src/orchestrator/adapter/
-├── agent-adapter.ts       # Main adapter implementation
-├── agent-adapter.test.ts  # Unit tests
-├── types.ts               # Adapter types
-└── index.ts               # Barrel export
+packages/opencode/src/orchestrator/
+├── registry/
+│   ├── executors/agentExecutor.ts    # Main integration
+│   ├── stepExecutorRegistry.ts       # Update dependencies type
+│   └── types.ts                      # Update RegistryDependencies
+├── engine/
+│   ├── factory.ts                    # Update to not require Client
+│   └── workflowEngine.ts             # May need directory param
 ```
+
+## Implementation Note: Directory Flow
+
+The `directory` parameter needs to flow through the system:
+
+```
+CLI (process.cwd())
+  → createWorkflowEngine({ directory })
+    → StepExecutorRegistry.initialize({ directory, ... })
+      → createAgentExecutor(directory)
+        → Instance.provide({ directory, fn })
+```
+
+When implementing, trace how `dependencies` are passed in the current code and ensure `directory` is available where `Instance.provide()` is called.

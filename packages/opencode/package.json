@@ -18,7 +18,7 @@
     "deploy": "echo 'Deploying application...' && bun run build && echo 'Deployment completed successfully'"
   },
   "bin": {
-    "opencode": "./bin/opencode"
+    "flomaster": "./bin/opencode"
   },
   "exports": {
     "./*": "./src/*.ts"
@@ -115,6 +115,7 @@
     "vscode-jsonrpc": "8.2.1",
     "web-tree-sitter": "0.25.10",
     "xdg-basedir": "5.1.0",
+    "xstate": "^5.19.0",
     "yargs": "18.0.0",
     "zod": "catalog:",
     "zod-to-json-schema": "3.24.5"

@@ -100,7 +100,7 @@ export const workflowMachine = setup({
     }),
     saveStepOutput: assign(({ context, event }) => {
       const e = event as unknown as { output: ExecuteStepOutput }
-      const { stepId, outputs, loopState } = e.output
+      const { stepId, outputs, sessionID, loopState } = e.output
 
       const newOutputs = { ...context.outputs, [stepId]: outputs }
       const newLoopStates = new Map(context.loopStates)
@@ -121,6 +121,7 @@ export const workflowMachine = setup({
             displayName: context.currentStepData?.displayName ?? stepId,
             status: "COMPLETED" as const,
             outputs,
+            ...(sessionID !== undefined && { sessionID }), // Conditional spread for UI access
             startTime: context.startTime,
             endTime: Date.now(),
             duration: Date.now() - context.startTime,
@@ -196,6 +197,7 @@ export const workflowMachine = setup({
     taskId: input.taskId,
     executionId: "",
     workflowSessionID: input.workflowSessionID,
+    signal: input.signal,
     outputs: input.outputs ?? {},
     pendingSteps: [],
     currentStep: null,
@@ -239,6 +241,7 @@ export const workflowMachine = setup({
               step: context.currentStepData as ParsedStep,
               executionId: context.executionId,
               workflowSessionID: context.workflowSessionID,
+              signal: context.signal,
               outputs: context.outputs,
               variables: context.variables,
               dryRun: context.dryRun,

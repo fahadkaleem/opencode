@@ -71,6 +71,9 @@ Generate a comprehensive report using this structure:
 
 [Relevant context: repositories involved, why this work is being done, any important background]
 
+### Goal
+[Here describe the entire task, what, why, how on a high level. If a certain high level goal was discussed and then we started working on it, those details need to go here. Be as detailed as possbile here because it tells the AI Agent what was the intended plan and when we write the the task breakdown and why it will understand everything]
+
 ---
 
 ## Architecture and Key Decisions
@@ -214,6 +217,7 @@ Before proceeding, the following need to be resolved:
 - Include ALL relevant technical details
 - Document file paths with exact locations
 - Explain WHY decisions were made, not just WHAT
+- If a junior engineers reads this document, they should know exactly what happened in thie entire conversation without missing any details
 
 **Be Clear:**
 - Use simple language where possible

@@ -357,6 +357,7 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
       graph: parsed,
       taskId,
       workflowSessionID,
+      signal: options?.signal,
       outputs: (options?.previousOutputs ?? {}) as Record<string, Record<string, unknown>>,
       variables: options?.variables ?? {},
       dryRun: options?.dryRun ?? false,
@@ -664,6 +665,7 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
 
     return {
       executionId,
+      workflowSessionID: context.workflowSessionID, // Include parent session ID
       terminateMode,
       outputs: context.outputs,
       duration: endTime - startTime,

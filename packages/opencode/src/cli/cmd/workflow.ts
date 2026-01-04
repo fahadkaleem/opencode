@@ -4,7 +4,16 @@ import { cmd } from "./cmd.js"
 import { bootstrap } from "../bootstrap.js"
 import { createWorkflowEngine } from "../../orchestrator/engine/factory.js"
 import { testWorkflow } from "../../orchestrator/workflows/test-workflow.js"
+import { researchWorkflow } from "../../orchestrator/workflows/research-workflow.js"
 import type { WorkflowData, WorkflowEvent } from "../../orchestrator/types.js"
+
+/**
+ * Available test workflows
+ */
+const workflows: Record<string, { workflow: WorkflowData; inputNodeId: string; outputNodeId: string }> = {
+  test: { workflow: testWorkflow, inputNodeId: "input-1", outputNodeId: "agent-1" },
+  research: { workflow: researchWorkflow, inputNodeId: "input-1", outputNodeId: "research-1" },
+}
 
 /**
  * Create a workflow with the input node's prompt value set.
@@ -48,6 +57,12 @@ const WorkflowRunCommand = cmd({
         array: true,
         default: [],
       })
+      .option("workflow", {
+        alias: "w",
+        describe: `Workflow to run (${Object.keys(workflows).join(", ")})`,
+        type: "string",
+        default: "test",
+      })
       .option("dry-run", {
         describe: "Validate workflow without executing",
         type: "boolean",
@@ -58,9 +73,16 @@ const WorkflowRunCommand = cmd({
     const message =
       args.message.length > 0 ? args.message.join(" ") : "Hello! This is a test of the FloMaster workflow orchestrator."
 
+    const workflowName = args.workflow as string
+    const workflowConfig = workflows[workflowName]
+    if (!workflowConfig) {
+      UI.error(`Unknown workflow: ${workflowName}. Available: ${Object.keys(workflows).join(", ")}`)
+      process.exit(1)
+    }
+
     await bootstrap(process.cwd(), async () => {
       UI.println()
-      UI.println(UI.Style.TEXT_INFO_BOLD + "* " + UI.Style.TEXT_NORMAL + "Starting workflow...")
+      UI.println(UI.Style.TEXT_INFO_BOLD + "* " + UI.Style.TEXT_NORMAL + `Starting workflow: ${workflowName}...`)
       UI.println()
 
       const { engine } = await createWorkflowEngine({
@@ -127,10 +149,14 @@ const WorkflowRunCommand = cmd({
 
       try {
         // Set the prompt input in the workflow
-        const workflowWithInput = createWorkflowWithInput(testWorkflow, "input-1", message)
+        const workflowWithInput = createWorkflowWithInput(
+          workflowConfig.workflow,
+          workflowConfig.inputNodeId,
+          message,
+        )
 
         // Execute the workflow
-        const result = await engine.executeWorkflow(workflowWithInput, "test-workflow-run", {
+        const result = await engine.executeWorkflow(workflowWithInput, `${workflowName}-workflow-run`, {
           dryRun: args.dryRun,
           variables: { prompt: message },
         })
@@ -139,11 +165,21 @@ const WorkflowRunCommand = cmd({
 
         if (result.terminateMode === "COMPLETED") {
           // Extract and display the agent's response
-          const agentOutput = result.outputs["agent-1"] as Record<string, unknown> | undefined
+          const agentOutput = result.outputs[workflowConfig.outputNodeId] as Record<string, unknown> | undefined
           if (agentOutput?.["response"]) {
             UI.println(UI.Style.TEXT_INFO_BOLD + "* " + UI.Style.TEXT_NORMAL + "Agent Response:")
             UI.println()
             UI.println(UI.markdown(String(agentOutput["response"])))
+          }
+
+          // Show session info if available
+          if (result.workflowSessionID) {
+            UI.println()
+            UI.println(UI.Style.TEXT_DIM + `Workflow Session: ${result.workflowSessionID}`)
+          }
+          const stepWithSession = result.stepResults.find((s) => s.sessionID)
+          if (stepWithSession?.sessionID) {
+            UI.println(UI.Style.TEXT_DIM + `Agent Session: ${stepWithSession.sessionID}`)
           }
         } else if (result.terminateMode === "FAILED") {
           UI.error(`Workflow failed: ${result.error}`)

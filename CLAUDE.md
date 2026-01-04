@@ -180,6 +180,50 @@ Follow STYLE_GUIDE.md:
 - Single-word variable names when descriptive
 - Use Bun APIs (e.g., `Bun.file()`)
 
+## Verification Philosophy
+
+**Typechecks are the bare minimum, not the finish line.**
+
+Passing `bun turbo typecheck` only proves the code compiles. It does NOT prove:
+- The feature actually works end-to-end
+- Runtime behavior is correct
+- Integration points connect properly
+- Config formats are valid
+- Default values make sense
+
+### Verification Hierarchy
+
+| Level | Command | What It Proves |
+|-------|---------|----------------|
+| 1. Typecheck | `bun turbo typecheck` | Code compiles (bare minimum) |
+| 2. Unit Tests | `bun test src/path/` | Individual functions work |
+| 3. **E2E Test** | `bun dev workflow run` | **Actually works for real** |
+
+### Always Run E2E Tests
+
+After implementing any orchestrator or agent changes:
+
+```bash
+# Test default workflow (uses "build" agent)
+bun dev workflow run "What is 2+2?"
+
+# Test custom agent workflow (uses custom agent from .opencode/agents/)
+bun dev workflow run --workflow research "What is 2+2?"
+
+# Verify session IDs are returned (proves sessions persist)
+# Output should show: Workflow Session: ses_xxx, Agent Session: ses_xxx
+```
+
+### Lesson Learned (TASK-07)
+
+During TASK-07, typecheck passed but E2E test revealed:
+- Parser defaulted `agentType` to `"default"` (non-existent agent)
+- Should have been `"build"` (the actual default agent)
+
+This bug was invisible to typechecks but immediately caught by running the actual workflow.
+
+**Rule: If you haven't run `bun dev workflow run` and seen it complete successfully, you haven't verified your changes.**
+
 ## Testing
 
 Tests use Bun's test runner in `packages/opencode/test/`. Use `test/fixture/fixture.ts` for creating temporary test directories with git initialization and config setup.
@@ -197,7 +241,8 @@ Implementation tasks are tracked in `.alfred/tasks/`:
 | TASK-01 | Copy orchestrator files + add xstate | ✅ Complete |
 | TASK-02 | Fix imports (logging) | ✅ Complete |
 | TASK-03 | Initial session integration | ✅ Complete |
-| TASK-04 | Rename CLI to flomaster + workflow command | ⏳ Ready |
+| TASK-04 | Rename CLI to flomaster + workflow command | ✅ Complete |
 | TASK-06 | Refined session integration | ✅ Complete |
+| TASK-07 | Proper agent integration | ✅ Complete |
 
 Read task files before implementing: `.alfred/tasks/TASK-XX/task.md`

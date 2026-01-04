@@ -2,13 +2,28 @@
  * Agent Step Executor
  *
  * Executes Agent steps using OpenCode's Session and SessionPrompt directly.
- * Follows the pattern established by task.ts and github.ts.
+ * Follows the pattern established by task.ts for proper agent integration.
+ *
+ * DESIGN DECISION: Sessions Are Not Deleted
+ *
+ * Step sessions are intentionally preserved after workflow execution because:
+ * 1. Users may want to chat with step agents to understand their work
+ * 2. The session history provides audit trail of what happened
+ * 3. Future UI will allow clicking a step to open chat with that agent
+ * 4. Parent-child relationship enables grouped display in TUI
+ *
+ * Sessions can be manually cleaned up via:
+ * - Session.remove(sessionId) for individual sessions
+ * - Workflow cleanup utilities (to be implemented)
  */
 
 import { Log } from "../../../util/log.js"
 import { Session } from "../../../session/index.js"
 import { SessionPrompt } from "../../../session/prompt.js"
 import { Identifier } from "../../../id/id.js"
+import { Agent } from "../../../agent/agent.js"
+import { Provider } from "../../../provider/provider.js"
+import { defer } from "../../../util/defer.js"
 import type { AgentConfig, ExecuteStepOutput, ParsedStep } from "../../types.js"
 import type { ExecutorContext, ExecutorDependencies, ExecutorOptions, StepExecutor } from "../types.js"
 
@@ -115,14 +130,14 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
       } else {
         const config = step.config.config
         if (config.agentType === "") {
-          warnings.push("agentType not specified, using default")
+          warnings.push("agentType not specified, using default 'build' agent")
         }
       }
 
       return { valid: errors.length === 0, errors, warnings }
     },
 
-    async execute(step: ParsedStep, context: ExecutorContext, _options?: ExecutorOptions): Promise<ExecuteStepOutput> {
+    async execute(step: ParsedStep, context: ExecutorContext, options?: ExecutorOptions): Promise<ExecuteStepOutput> {
       log.info("Starting agent execution", { stepId: step.id, stepName: step.displayName })
 
       const config = step.config
@@ -130,13 +145,27 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
         throw new AgentExecutionError(`Invalid config type for agent step: ${config.type}`, step.id)
       }
 
-      // Dry-run mode
+      // Get agent type from config, default to "build"
+      const agentType = config.config.agentType ?? "build"
+
+      // Look up the agent (built-in or custom from .opencode/agents/)
+      const agent = await Agent.get(agentType)
+      if (!agent) {
+        throw new AgentExecutionError(
+          `Unknown agent type: "${agentType}". ` +
+            `Define it in .opencode/agents/${agentType}.md or use a built-in agent (build, plan, explore, general).`,
+          step.id,
+        )
+      }
+      log.info("Agent loaded", { stepId: step.id, agentType, agentName: agent.name })
+
+      // Dry-run mode - validate agent exists even in dry-run
       if (context.dryRun) {
         log.info("Dry-run mode: returning mock response", { stepId: step.id })
         return {
           stepId: step.id,
           outputs: {
-            response: `[DRY-RUN] Agent ${step.displayName} would execute`,
+            response: `[DRY-RUN] Agent ${step.displayName} (${agent.name}) would execute`,
             success: true,
           },
           complete: true,
@@ -151,79 +180,135 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
         }
       }
 
-      try {
-        // Create session as child of workflow session (following task.ts pattern)
-        // This establishes parent-child hierarchy for visibility in the TUI
-        log.info("Creating session", { stepId: step.id, parentID: context.workflowSessionID })
-        const session = await Session.create({
-          ...(context.workflowSessionID !== undefined && { parentID: context.workflowSessionID }),
-          title: `${step.displayName} (@agent subagent)`,
-        })
-        log.info("Session created", { stepId: step.id, sessionId: session.id })
+      // Build permission rules: deny "task" + any additional tool restrictions from step config
+      // This prevents infinite recursion - workflow steps cannot spawn subagents via task tool
+      const permissionRules: Array<{ permission: string; pattern: string; action: "allow" | "deny" }> = [
+        { permission: "task", pattern: "*", action: "deny" },
+      ]
 
-        try {
-          const prompt = buildAgentPrompt(config.config, stepInputs)
-          log.info("Built prompt", { stepId: step.id, promptLength: prompt.length })
-
-          const messageID = Identifier.ascending("message")
-
-          // Determine model
-          const model =
-            config.config.model !== undefined ? { providerID: "anthropic", modelID: config.config.model } : undefined
-
-          // Call SessionPrompt.prompt directly (following task.ts pattern)
-          log.info("Calling SessionPrompt.prompt", { stepId: step.id, model: model?.modelID })
-          const result = await SessionPrompt.prompt({
-            messageID,
-            sessionID: session.id,
-            ...(model !== undefined && { model }),
-            ...(config.config.systemPrompt !== undefined && { system: config.config.systemPrompt }),
-            parts: [
-              {
-                id: Identifier.ascending("part"),
-                type: "text",
-                text: prompt,
-              },
-            ],
-          })
-
-          // Extract response text and tool calls from result
-          const response = extractTextFromParts(result.parts as Array<{ type: string; text?: string }>)
-          const toolCalls = extractToolCallsFromParts(
-            result.parts as Array<{
-              type: string
-              tool?: string
-              state?: { status: string; input?: unknown; output?: unknown }
-            }>,
-          )
-
-          log.info("Execution completed", {
-            stepId: step.id,
-            responseLength: response.length,
-            toolCallCount: toolCalls.length,
-          })
-
-          return {
-            stepId: step.id,
-            outputs: {
-              response,
-              toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-              success: true,
-            },
-            complete: true,
-          }
-        } finally {
-          // Clean up session
-          log.debug("Removing session", { stepId: step.id, sessionId: session.id })
-          await Session.remove(session.id).catch((e) => {
-            log.warn("Failed to remove session", { stepId: step.id, error: String(e) })
+      // Add tool restrictions from step config (if any)
+      // AgentConfig.tools is Record<string, boolean> - false means deny
+      if (config.config.tools) {
+        for (const [tool, enabled] of Object.entries(config.config.tools)) {
+          permissionRules.push({
+            permission: tool,
+            pattern: "*",
+            action: enabled ? "allow" : "deny",
           })
         }
+      }
+
+      // Create child session (following task.ts pattern)
+      // Permissions are set on Session.create() - this is the preferred approach
+      // (SessionPrompt.prompt's `tools` param is deprecated)
+      log.info("Creating session", { stepId: step.id, parentID: context.workflowSessionID })
+
+      const session = await Session.create({
+        ...(context.workflowSessionID !== undefined && { parentID: context.workflowSessionID }),
+        title: `${step.displayName} (@${agent.name})`,
+        permission: permissionRules,
+      })
+      log.info("Session created", { stepId: step.id, sessionId: session.id, agentName: agent.name })
+
+      // Set up signal handling (following task.ts pattern)
+      // Signal comes from options (ExecutorOptions.signal), NOT context
+      function cancel() {
+        SessionPrompt.cancel(session.id)
+      }
+      if (options?.signal) {
+        options.signal.addEventListener("abort", cancel)
+      }
+      using _ = defer(() => {
+        if (options?.signal) {
+          options.signal.removeEventListener("abort", cancel)
+        }
+      })
+
+      try {
+        // Build the prompt
+        const prompt = buildAgentPrompt(config.config, stepInputs)
+        log.info("Built prompt", { stepId: step.id, promptLength: prompt.length })
+
+        const messageID = Identifier.ascending("message")
+
+        // Determine model (step config > agent config > undefined for default)
+        // Model is string format "provider/model" - parse with Provider.parseModel()
+        let model = agent.model
+        if (config.config.model !== undefined) {
+          const parsed = Provider.parseModel(config.config.model)
+          if (!parsed.providerID || !parsed.modelID) {
+            throw new AgentExecutionError(
+              `Invalid model format: "${config.config.model}". Expected "provider/model" format (e.g., "anthropic/claude-sonnet-4-20250514").`,
+              step.id,
+            )
+          }
+          model = parsed
+        }
+
+        // Call SessionPrompt.prompt with agent (following task.ts pattern)
+        // NOTE: We do NOT pass `tools` here - it's deprecated. Use Session permissions instead.
+        log.info("Calling SessionPrompt.prompt", {
+          stepId: step.id,
+          agentName: agent.name,
+          model: model?.modelID,
+        })
+
+        const result = await SessionPrompt.prompt({
+          messageID,
+          sessionID: session.id,
+          ...(model !== undefined && { model }),
+          agent: agent.name, // KEY: Pass the agent name!
+          ...(config.config.systemPrompt !== undefined && { system: config.config.systemPrompt }),
+          parts: [
+            {
+              id: Identifier.ascending("part"),
+              type: "text",
+              text: prompt,
+            },
+          ],
+        })
+
+        // Extract response text and tool calls from result
+        const response = extractTextFromParts(result.parts as Array<{ type: string; text?: string }>)
+        const toolCalls = extractToolCallsFromParts(
+          result.parts as Array<{
+            type: string
+            tool?: string
+            state?: { status: string; input?: unknown; output?: unknown }
+          }>,
+        )
+
+        log.info("Execution completed", {
+          stepId: step.id,
+          sessionId: session.id,
+          responseLength: response.length,
+          toolCallCount: toolCalls.length,
+        })
+
+        // Return outputs INCLUDING sessionID (DON'T delete session!)
+        return {
+          stepId: step.id,
+          sessionID: session.id, // KEY: Return sessionID for UI access
+          outputs: {
+            response,
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+            success: true,
+          },
+          complete: true,
+        }
+
+        // NOTE: We intentionally do NOT delete the session here.
+        // The session persists so users can interact with the agent later via UI.
       } catch (error) {
         log.error("Execution failed", {
           stepId: step.id,
+          sessionId: session.id,
           error: error instanceof Error ? error.message : String(error),
         })
+
+        // On error, we still keep the session for debugging purposes
+        // User can see what happened and potentially retry
+
         if (error instanceof AgentExecutionError) {
           throw error
         }

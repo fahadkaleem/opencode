@@ -380,18 +380,18 @@ export type SubFlowConfig = {
  * Configuration for Agent component.
  */
 export type AgentConfig = {
-  /** Agent type identifier */
+  /** OpenCode agent type to use (default: "build") */
   readonly agentType: string
-  /** Model to use */
+  /** Model in "provider/model" format, e.g. "anthropic/claude-sonnet-4-20250514" */
   readonly model?: string
   /** Temperature for generation */
   readonly temperature?: number
   /** Maximum tokens to generate */
   readonly maxTokens?: number
-  /** System prompt */
+  /** Additional system prompt (augments agent's base prompt) */
   readonly systemPrompt?: string
-  /** Available tools for the agent */
-  readonly tools?: readonly string[]
+  /** Tool overrides - true to enable, false to disable */
+  readonly tools?: Readonly<Record<string, boolean>>
 }
 
 /**
@@ -613,6 +613,8 @@ export type StepResult = {
   readonly status: StepStatus
   /** Step outputs */
   readonly outputs: Readonly<Record<string, unknown>>
+  /** Session ID for UI interaction (for Agent steps) */
+  readonly sessionID?: string
   /** Error if failed */
   readonly error?: string
   /** Stack trace if available */
@@ -633,6 +635,8 @@ export type StepResult = {
 export type WorkflowResult = {
   /** Unique execution identifier */
   readonly executionId: string
+  /** Parent session ID for all steps */
+  readonly workflowSessionID?: string
   /** How the workflow terminated */
   readonly terminateMode: WorkflowTerminateMode
   /** All workflow outputs */
@@ -810,6 +814,8 @@ export type WorkflowContext = {
   readonly executionId: string
   /** Parent session ID for the workflow (agent steps create child sessions) */
   readonly workflowSessionID?: string
+  /** Abort signal for cancellation */
+  readonly signal?: AbortSignal
   /** Accumulated outputs from all steps */
   readonly outputs: Readonly<Record<string, Record<string, unknown>>>
   /** Steps waiting to be processed */
@@ -912,6 +918,8 @@ export type ExecuteStepInput = {
   readonly loopStates: ReadonlyMap<string, LoopState>
   /** Step executor registry for pluggable execution */
   readonly executorRegistry?: unknown // Typed as unknown to avoid circular dependency
+  /** Abort signal for cancellation propagation */
+  readonly signal?: AbortSignal
 }
 
 /**
@@ -920,6 +928,8 @@ export type ExecuteStepInput = {
 export type ExecuteStepOutput = {
   /** Step ID */
   readonly stepId: string
+  /** Session ID created by this step (for Agent steps) */
+  readonly sessionID?: string
   /** Step outputs */
   readonly outputs: Readonly<Record<string, unknown>>
   /** Updated loop state (if loop step) */
@@ -954,6 +964,8 @@ export type WorkflowActorInput = {
   readonly taskId: string
   /** Parent session ID for the workflow (agent steps create child sessions) */
   readonly workflowSessionID?: string
+  /** Abort signal for cancellation */
+  readonly signal?: AbortSignal
   /** Initial outputs */
   readonly outputs?: Readonly<Record<string, Record<string, unknown>>>
   /** Starting node (for resume) */

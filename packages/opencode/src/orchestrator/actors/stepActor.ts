@@ -99,19 +99,21 @@ export async function executeStep(input: ExecuteStepInput): Promise<ExecuteStepO
   // Get step event emitter from registry (set by WorkflowEngine)
   const stepEventEmitter = registry.getStepEventEmitter(input.executionId)
 
-  // Build executor options with event callback if emitter is available
-  const options: ExecutorOptions | undefined = stepEventEmitter
-    ? {
-        onEvent: (event) => {
-          // Transform ExecutorEvent to StepExecutionEvent by adding stepId
-          const stepEvent: StepExecutionEvent = {
-            ...event,
-            stepId: step.id,
-          }
-          stepEventEmitter(stepEvent)
-        },
-      }
-    : undefined
+  // Build executor options with signal and event callback
+  // Signal comes from input (ExecuteStepInput.signal), passed via options (ExecutorOptions.signal)
+  const options: ExecutorOptions = {
+    ...(input.signal !== undefined && { signal: input.signal }),
+    ...(stepEventEmitter !== undefined && {
+      onEvent: (event) => {
+        // Transform ExecutorEvent to StepExecutionEvent by adding stepId
+        const stepEvent: StepExecutionEvent = {
+          ...event,
+          stepId: step.id,
+        }
+        stepEventEmitter(stepEvent)
+      },
+    }),
+  }
 
   try {
     return await executor.execute(step, context, options)

@@ -3,7 +3,7 @@
 > **Purpose**: This is a living document capturing the context, decisions, and evolution of the FloMaster project. It contains information that cannot be easily gathered from code alone - the "why" behind decisions, historical context, and tribal knowledge. New team members should read this before diving into the codebase.
 >
 > **Last Updated**: 2026-01-04
-> **Current Phase**: TASK-07 Complete, Ready for TASK-08
+> **Current Phase**: TASK-09 Complete (Phases 1 & 2), Phase 3 Pending (CLI commands)
 > **Project Start Date**: 2025-01-01
 > **Target Launch**: End of 2026
 
@@ -528,29 +528,59 @@ The `bootstrap()` function is critical - it sets up the `Instance.provide()` con
 
 ---
 
-### TASK-08: Default Step Agents (Planned)
-**Status**: 📋 Pending (depends on TASK-07)
+### TASK-08: Default Step Agents
+**Status**: ✅ Complete
 
-**What**: Create default step agents in `.opencode/agents/`:
-- `research-agent.md` - Read-only exploration
-- `plan-agent.md` - Planning with limited write
-- `implement-agent.md` - Full build access
-- `review-agent.md` - Code review (read + analysis)
+**What**: Created default step agents in `packages/opencode/.opencode/agents/`:
 
-**Why**: Provide out-of-the-box agents optimized for common workflow patterns.
+| Agent | Purpose | Key Permissions |
+|-------|---------|-----------------|
+| `research-agent.md` | Read-only codebase exploration | read, grep, glob, list, webfetch, websearch |
+| `plan-agent.md` | Implementation planning | read + write to `.opencode/plan/` and `.alfred/` |
+| `implement-agent.md` | Code implementation | full access (read, edit, write, bash) |
+| `review-agent.md` | Code review & analysis | read + git diff/log/show commands |
+
+**Key Design Choices**:
+- All agents use `mode: subagent` (not primary)
+- All agents deny `task` permission implicitly via `"*": deny`
+- Permissions follow principle of least privilege
+- Prompts are concise and role-specific
+
+**Reference**: `.alfred/tasks/TASK-08/task.md`
 
 ---
 
-### TASK-09: Step Configuration Schema (Planned)
-**Status**: 📋 Pending (depends on TASK-07)
+### TASK-09: Self-Contained FloMaster Module + State Management
+**Status**: ✅ Phases 1 & 2 Complete, Phase 3 Pending
 
-**What**: Update workflow step schema to include:
-- `agentType` - Which OpenCode agent to use
-- `systemPrompt` - Step-specific instructions (optional)
-- `allowInteraction` - Can user chat with this step?
-- `requiresApproval` - Pause for human approval?
+**What was done**:
 
-**Why**: Enable rich step configuration in workflow definitions.
+1. **Phase 1: Restructure to `src/flomaster/`** ✅
+   - Moved `src/orchestrator/` → `src/flomaster/orchestrator/`
+   - Moved workflow CLI → `src/flomaster/cli/workflow.ts`
+   - Created `src/flomaster/index.ts` with public exports
+   - Only touchpoint: import in `src/index.ts`
+
+2. **Phase 2: StateManager Integration** ✅
+   - Ported from `flomaster-prototype/packages/core/src/state/`
+   - Located at `src/flomaster/state/stateManager.ts`
+   - Stores execution state in `{project}/.flomaster/executions/{id}/`
+   - Auto-checkpoints after each step completion
+
+3. **Phase 3: CLI Commands** 🔲 Pending
+   - `workflow list` - List executions
+   - `workflow inspect <id>` - View execution details
+   - `workflow resume <id>` - Resume from checkpoint
+
+**State Storage Location**: `{project_root}/.flomaster/executions/{execution_id}/`
+- `state.json` - Execution status, step statuses
+- `context.json` - Step outputs (for context passing)
+- `mapping.json` - Step-to-session mappings
+- `checkpoint.json` - Full checkpoint for crash recovery
+
+**Key Design Decision**: State stored at **project root** (not in `~/.local/share/`) because workflow executions are project-specific.
+
+**Reference**: `.alfred/tasks/TASK-09/task.md`
 
 ---
 
@@ -571,14 +601,19 @@ The `bootstrap()` function is critical - it sets up the `Instance.provide()` con
 | XState orchestration | ✅ | State machine manages transitions |
 | Multiple test workflows | ✅ | `--workflow test` or `--workflow research` |
 | TypeScript compilation | ✅ | `bun turbo typecheck` passes |
+| Pre-built step agents | ✅ | TASK-08 complete - research, plan, implement, review agents |
+| Self-contained flomaster module | ✅ | All FloMaster code in `src/flomaster/` |
+| Workflow state persistence | ✅ | State saved to `{project}/.flomaster/executions/` |
+| Checkpoint after each step | ✅ | Auto-checkpoints for crash recovery |
 
 ### What's Broken / Missing
 
 | Issue | Impact | Fix In |
 |-------|--------|--------|
-| No pre-built step agents | Must create custom agents manually | TASK-08 |
-| No step config schema | Can't configure systemPrompt, allowInteraction in JSON | TASK-09 |
-| No workflow file loading | Workflows hardcoded in TypeScript | Future |
+| No CLI to inspect executions | Must manually read JSON files | TASK-09 Phase 3 |
+| No workflow resume command | Can't continue failed workflows | TASK-09 Phase 3 |
+| No step config schema | Can't configure systemPrompt, allowInteraction in JSON | TASK-10 |
+| No workflow file loading | Workflows hardcoded in TypeScript | TASK-11 |
 
 ### Verification Commands
 
@@ -1200,21 +1235,50 @@ const model = config.model
 
 ## File Reference Guide
 
-### Core Orchestrator Files
+### Core FloMaster Files (in `src/flomaster/`)
 
 | File | Purpose |
 |------|---------|
-| `orchestrator/engine/workflowEngine.ts` | Main engine class, executes workflows |
-| `orchestrator/engine/factory.ts` | Creates configured engine instances |
-| `orchestrator/machine/workflowMachine.ts` | XState state machine definition |
-| `orchestrator/machine/actions.ts` | State machine actions |
-| `orchestrator/machine/guards.ts` | State machine transition guards |
-| `orchestrator/actors/stepActor.ts` | Step execution actor |
-| `orchestrator/parser/workflowParser.ts` | JSON → DAG conversion |
-| `orchestrator/registry/stepExecutorRegistry.ts` | Executor dispatch |
-| `orchestrator/registry/executors/agentExecutor.ts` | **KEY FILE** - Agent step execution |
-| `orchestrator/types.ts` | All type definitions |
-| `orchestrator/utils/contextInterpolator.ts` | `{{variable}}` substitution |
+| `flomaster/index.ts` | Public exports for FloMaster module |
+| `flomaster/cli/workflow.ts` | Workflow CLI command |
+| `flomaster/orchestrator/engine/workflowEngine.ts` | Main engine class, executes workflows |
+| `flomaster/orchestrator/engine/factory.ts` | Creates configured engine instances |
+| `flomaster/orchestrator/machine/workflowMachine.ts` | XState state machine definition |
+| `flomaster/orchestrator/machine/actions.ts` | State machine actions |
+| `flomaster/orchestrator/machine/guards.ts` | State machine transition guards |
+| `flomaster/orchestrator/actors/stepActor.ts` | Step execution actor |
+| `flomaster/orchestrator/parser/workflowParser.ts` | JSON → DAG conversion |
+| `flomaster/orchestrator/registry/stepExecutorRegistry.ts` | Executor dispatch |
+| `flomaster/orchestrator/registry/executors/agentExecutor.ts` | **KEY FILE** - Agent step execution |
+| `flomaster/orchestrator/types.ts` | All type definitions |
+| `flomaster/orchestrator/utils/contextInterpolator.ts` | `{{variable}}` substitution |
+| `flomaster/state/stateManager.ts` | **NEW** - Workflow state persistence |
+| `flomaster/state/types.ts` | State types and enums |
+| `flomaster/state/defaults.ts` | Storage constants |
+
+### FloMaster Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `/.opencode/agent/research-agent.md` | Read-only exploration agent |
+| `/.opencode/agent/plan-agent.md` | Planning agent with limited write |
+| `/.opencode/agent/implement-agent.md` | Full-access implementation agent |
+| `/.opencode/agent/review-agent.md` | Code review agent |
+
+**Note**: Agent files are in the **root** `/.opencode/agent/` directory (not `packages/opencode/.opencode/`). OpenCode searches for agents in `.opencode/` directories walking up from the working directory.
+
+### FloMaster Runtime Data
+
+| Directory | Purpose |
+|-----------|---------|
+| `{project}/.flomaster/` | FloMaster runtime data (project-specific) |
+| `.flomaster/executions/` | Workflow execution state |
+| `.flomaster/executions/{id}/state.json` | Execution status, step statuses |
+| `.flomaster/executions/{id}/context.json` | Step outputs (for context passing) |
+| `.flomaster/executions/{id}/mapping.json` | Step-to-session mappings |
+| `.flomaster/executions/{id}/checkpoint.json` | Full checkpoint for crash recovery |
+
+**Note**: `.flomaster/` is stored at the **project root** (git worktree), not in `~/.local/share/`. This is intentional - workflow executions are project-specific, unlike OpenCode's global session storage.
 
 ### OpenCode Integration Points
 
@@ -1432,10 +1496,11 @@ Key test files to study:
 |-------|-------------|--------|
 | Core Orchestrator | DAG execution, session hierarchy | ✅ Done |
 | Agent Integration | Proper use of OpenCode agents | ✅ TASK-07 Complete |
-| Default Step Agents | research, plan, implement, review | 📋 TASK-08 |
-| Step Configuration | agentType, systemPrompt, permissions | 📋 TASK-09 |
-| Workflow Files | Load from `.flomaster/workflows/` | 📋 TASK-10 |
-| **Unit Tests** | Comprehensive tests for orchestrator code | 📋 TASK-11 |
+| Default Step Agents | research, plan, implement, review | ✅ TASK-08 Complete |
+| **FloMaster Module + State** | Self-contained folder + StateManager | ✅ TASK-09 (Phase 3 pending) |
+| Step Configuration | agentType, systemPrompt, permissions | 📋 TASK-10 |
+| Workflow Files | Load from `.flomaster/workflows/` | 📋 TASK-11 |
+| **Unit Tests** | Comprehensive tests for orchestrator code | 📋 TASK-12 |
 | Electron UI | Replace SolidJS TUI, enable step chatting | 📋 Planned |
 | Human-in-the-Loop | Approval gates, step interaction | 📋 Planned |
 | Workflow Cleanup | Utilities for cleaning old sessions | 📋 Planned |
@@ -1707,6 +1772,42 @@ Key events used in orchestrator:
 ---
 
 ## Appendix: Decision Log
+
+### 2026-01-04: TASK-09 Self-Contained Module + State Persistence
+
+**Context**: Restructured FloMaster code and added state persistence for workflow executions.
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Code location | `src/flomaster/` self-contained | Clean upstream merges from OpenCode main |
+| State storage location | `{project}/.flomaster/` at project root | Workflow executions are project-specific |
+| Not using `.opencode/` | Separate `.flomaster/` directory | `.opencode/` is for config, not runtime data |
+| Not using global XDG paths | Project-level storage | Different projects have different workflows |
+| Directory detection | `Instance.worktree` (git root) | Consistent with how OpenCode finds project root |
+| Checkpoint timing | After each step completion | Enables crash recovery from any point |
+
+**Files Created/Moved**:
+- `src/flomaster/` - All FloMaster code moved here
+- `src/flomaster/state/` - StateManager ported from prototype
+- `.flomaster/executions/` - Runtime storage at project root
+
+---
+
+### 2026-01-04: TASK-08 Default Step Agents Complete
+
+**Context**: Created 4 pre-built workflow step agents in `packages/opencode/.opencode/agents/`.
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Agent mode | `subagent` for all | Workflow steps are programmatic, not user-facing |
+| Permission approach | Explicit allow + `"*": deny` | Principle of least privilege; task denied implicitly |
+| research-agent permissions | read, grep, glob, list, webfetch, websearch | Full exploration capability, no write access |
+| plan-agent write access | `.opencode/plan/` and `.alfred/` only | Can create plans but not modify source code |
+| implement-agent permissions | Full access (read, edit, write, bash) | Needs to make actual code changes |
+| review-agent bash access | Only `git diff`, `git log`, `git show` | Can see changes without executing arbitrary commands |
+| Prompt style | Concise, role-specific | Following OpenCode's built-in agent patterns |
+
+---
 
 ### 2026-01-04: TASK-07 Implementation Complete
 

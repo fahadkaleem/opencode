@@ -73,15 +73,17 @@ cd packages/opencode && bun test test/tool/bash.test.ts
 ### Monorepo Structure (Bun workspaces with Turbo)
 
 - **packages/opencode** - Core CLI, server, and orchestrator
-  - `src/cli/cmd/` - CLI commands (run, serve, auth, mcp, workflow, etc.)
+  - `src/cli/cmd/` - CLI commands (run, serve, auth, mcp, etc.)
   - `src/cli/cmd/tui/` - TUI built with SolidJS + [opentui](https://github.com/sst/opentui)
-  - `src/cli/cmd/workflow.ts` - Workflow orchestration command
   - `src/server/server.ts` - Hono-based HTTP/WebSocket API server
   - `src/session/` - Conversation session management and message processing
   - `src/agent/agent.ts` - Agent definitions (build, plan, explore, general)
   - `src/provider/` - LLM provider integrations (anthropic, openai, google, bedrock, etc.)
   - `src/tool/` - Agent tools (bash, edit, read, grep, glob, websearch, etc.)
-  - `src/orchestrator/` - **FloMaster workflow orchestration engine**
+  - `src/flomaster/` - **FloMaster workflow orchestration (self-contained)**
+    - `orchestrator/` - DAG execution engine, XState machine, step executors
+    - `state/` - Workflow state persistence (StateManager)
+    - `cli/workflow.ts` - Workflow CLI command
   - `src/mcp/` - Model Context Protocol server support
   - `src/lsp/` - Language Server Protocol integration
 - **packages/plugin** - Plugin SDK (`@opencode-ai/plugin`)
@@ -91,33 +93,49 @@ cd packages/opencode && bun test test/tool/bash.test.ts
 - **packages/docs** - Documentation (Mintlify)
 - **packages/console** - Web console components
 
-### Orchestrator Architecture
+### FloMaster Architecture
 
-The orchestrator (`src/orchestrator/`) is the core of FloMaster:
+All FloMaster code is self-contained in `src/flomaster/` for clean upstream merges:
 
 ```
-orchestrator/
-├── engine/              # Workflow execution engine
-│   ├── workflowEngine.ts    # Main orchestrator class
-│   └── factory.ts           # Engine creation
-├── machine/             # XState v5 state machine
-│   ├── workflowMachine.ts   # State machine definition
-│   ├── actions.ts           # State actions
-│   └── guards.ts            # Transition guards
-├── parser/              # Workflow JSON parser
-│   ├── workflowParser.ts    # React Flow JSON → DAG
-│   └── topology.ts          # Topological sort, cycle detection
-├── registry/            # Step executor registry
-│   ├── stepExecutorRegistry.ts
-│   └── executors/           # Step type implementations
-│       ├── agentExecutor.ts     # AI agent steps
-│       ├── conditionalExecutor.ts
-│       ├── loopExecutor.ts
-│       └── subflowExecutor.ts
-├── workflows/           # Workflow definitions
-│   └── test-workflow.ts     # Test workflow
-└── utils/               # Utilities
-    └── contextInterpolator.ts   # {{variable}} substitution
+src/flomaster/
+├── cli/
+│   └── workflow.ts          # Workflow CLI command
+├── orchestrator/
+│   ├── engine/              # Workflow execution engine
+│   │   ├── workflowEngine.ts    # Main orchestrator class
+│   │   └── factory.ts           # Engine creation with StateManager
+│   ├── machine/             # XState v5 state machine
+│   │   ├── workflowMachine.ts   # State machine definition
+│   │   ├── actions.ts           # State actions
+│   │   └── guards.ts            # Transition guards
+│   ├── parser/              # Workflow JSON parser
+│   ├── registry/            # Step executor registry
+│   │   └── executors/           # Step type implementations
+│   │       └── agentExecutor.ts     # AI agent steps (key file)
+│   └── workflows/           # Built-in workflow definitions
+│       ├── test-workflow.ts
+│       ├── research-workflow.ts
+│       └── sdlc-workflow.ts     # Multi-step SDLC workflow
+├── state/                   # Workflow state persistence
+│   ├── stateManager.ts      # State persistence manager
+│   ├── types.ts             # State types and enums
+│   └── defaults.ts          # Storage constants
+└── index.ts                 # Public exports
+```
+
+### State Storage
+
+Workflow execution state is stored at the **project root** in `.flomaster/`:
+
+```
+{project}/.flomaster/
+└── executions/
+    └── {execution-id}/
+        ├── state.json       # Execution status, step statuses
+        ├── context.json     # Step outputs (for context passing)
+        ├── mapping.json     # Step-to-session mappings
+        └── checkpoint.json  # Full checkpoint for crash recovery
 ```
 
 ### Session Integration Model
@@ -210,8 +228,17 @@ bun dev workflow run "What is 2+2?"
 # Test custom agent workflow (uses custom agent from .opencode/agents/)
 bun dev workflow run --workflow research "What is 2+2?"
 
+# Test multi-step SDLC workflow (research → plan → implement → review)
+bun dev workflow run --workflow sdlc "Add a hello world function"
+
+# Dry-run (no API calls, validates structure)
+bun dev workflow run --workflow sdlc --dry-run "Test task"
+
 # Verify session IDs are returned (proves sessions persist)
-# Output should show: Workflow Session: ses_xxx, Agent Session: ses_xxx
+# Output should show: Workflow Session: ses_xxx, Agent Session: ses_xxx, Execution ID: exec_xxx
+
+# Verify state files created
+ls .flomaster/executions/
 ```
 
 ### Lesson Learned (TASK-07)
@@ -244,5 +271,15 @@ Implementation tasks are tracked in `.alfred/tasks/`:
 | TASK-04 | Rename CLI to flomaster + workflow command | ✅ Complete |
 | TASK-06 | Refined session integration | ✅ Complete |
 | TASK-07 | Proper agent integration | ✅ Complete |
+| TASK-08 | Default step agents (research, plan, implement, review) | ✅ Complete |
+| TASK-09 | Self-contained flomaster module + state persistence | ✅ Phases 1-2 Complete |
 
 Read task files before implementing: `.alfred/tasks/TASK-XX/task.md`
+
+## Key Directories
+
+| Directory | Purpose |
+|-----------|---------|
+| `/.opencode/agent/` | Custom agents (research-agent, plan-agent, etc.) |
+| `/.flomaster/executions/` | Workflow state persistence (project-specific) |
+| `.alfred/tasks/` | Task specifications and plans |

@@ -27,7 +27,7 @@ import { EOL } from "os"
 import { WebCommand } from "./cli/cmd/web"
 import { PrCommand } from "./cli/cmd/pr"
 import { SessionCommand } from "./cli/cmd/session"
-import { WorkflowCommand } from "./cli/cmd/workflow"
+import { WorkflowCommand } from "./flomaster/cli/workflow"
 
 process.on("unhandledRejection", (e) => {
   Log.Default.error("rejection", {

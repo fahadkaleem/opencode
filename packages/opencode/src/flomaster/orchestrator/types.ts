@@ -733,6 +733,13 @@ export type WorkflowEvent =
       content: string
     }
   | {
+      type: "STEP_SESSION_CREATED"
+      executionId: string
+      stepId: string
+      sessionID: string
+      agentName: string
+    }
+  | {
       type: "TOOL_CALL_STARTED"
       executionId: string
       stepId: string
@@ -892,6 +899,7 @@ export type StepExecutionEvent =
   | { type: "progress"; stepId: string; content: string }
   | { type: "tool_start"; stepId: string; toolName: string; toolArgs: unknown }
   | { type: "tool_end"; stepId: string; toolName: string; toolResult: unknown }
+  | { type: "session_created"; stepId: string; sessionId: string; agentName: string }
 
 /**
  * Callback for emitting step execution events.

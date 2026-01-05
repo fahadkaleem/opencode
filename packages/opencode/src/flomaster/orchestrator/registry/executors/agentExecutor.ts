@@ -210,6 +210,10 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
       })
       log.info("Session created", { stepId: step.id, sessionId: session.id, agentName: agent.name })
 
+      // Emit session_created event immediately for crash recovery
+      // This allows the state manager to record the mapping before execution starts
+      options?.onEvent?.({ type: "session_created", sessionId: session.id, agentName: agent.name })
+
       // Set up signal handling (following task.ts pattern)
       // Signal comes from options (ExecutorOptions.signal), NOT context
       function cancel() {

@@ -31,6 +31,7 @@ export type ExecutorEvent =
   | { type: "progress"; content: string }
   | { type: "tool_start"; toolName: string; toolArgs: unknown }
   | { type: "tool_end"; toolName: string; toolResult: unknown }
+  | { type: "session_created"; sessionId: string; agentName: string }
 
 /**
  * Options for step execution.

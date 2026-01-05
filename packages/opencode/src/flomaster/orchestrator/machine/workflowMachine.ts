@@ -57,7 +57,7 @@ export const workflowMachine = setup({
     },
   },
   actions: {
-    initializeWorkflow: assign(({ event }) => {
+    initializeWorkflow: assign(({ context, event }) => {
       const e = event as {
         type: "START"
         graph: ParsedWorkflow
@@ -65,15 +65,54 @@ export const workflowMachine = setup({
         variables?: Record<string, unknown>
         executionId?: string
       }
+
+      // Check if we have previousOutputs (from resume operation)
+      // Steps with existing outputs are considered already completed
+      const previousOutputs = context.outputs ?? {}
+      const alreadyCompletedSteps = new Set<string>(Object.keys(previousOutputs))
+
+      // Determine entry points, accounting for already-completed steps
+      // If entry points are already completed, find their successors that can run
+      let initialPendingSteps: string[]
+      if (alreadyCompletedSteps.size > 0) {
+        // Resume mode: find the next runnable steps after completed ones
+        const pendingSet = new Set<string>()
+
+        // Start with entry points that aren't completed
+        for (const entryPoint of e.graph.entryPoints) {
+          if (!alreadyCompletedSteps.has(entryPoint)) {
+            pendingSet.add(entryPoint)
+          }
+        }
+
+        // For each completed step, find successors that can now run
+        for (const completedId of alreadyCompletedSteps) {
+          const successors = e.graph.adjacency.get(completedId) ?? []
+          for (const successor of successors) {
+            // Check if all predecessors of this successor are completed
+            const predecessors = e.graph.reverseAdjacency.get(successor) ?? []
+            const allPredecessorsComplete = predecessors.every((pred) => alreadyCompletedSteps.has(pred))
+            if (allPredecessorsComplete && !alreadyCompletedSteps.has(successor)) {
+              pendingSet.add(successor)
+            }
+          }
+        }
+
+        initialPendingSteps = [...pendingSet]
+      } else {
+        // Normal mode: start from entry points
+        initialPendingSteps = [...e.graph.entryPoints]
+      }
+
       return {
         graph: e.graph,
         taskId: e.taskId,
         // Use provided executionId or generate a new one
         executionId: e.executionId ?? generateExecutionId(),
-        pendingSteps: [...e.graph.entryPoints],
+        pendingSteps: initialPendingSteps,
         variables: e.variables ?? {},
         startTime: Date.now(),
-        completedSteps: new Set<string>(),
+        completedSteps: alreadyCompletedSteps,
         skippedSteps: new Set<string>(),
         loopStates: new Map<string, LoopState>(),
         stepResults: [],

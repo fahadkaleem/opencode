@@ -800,6 +800,15 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
           },
         })
         break
+      case "session_created":
+        this.emitEvent({
+          type: "STEP_SESSION_CREATED",
+          executionId,
+          stepId: event.stepId,
+          sessionID: event.sessionId,
+          agentName: event.agentName,
+        })
+        break
     }
   }
 

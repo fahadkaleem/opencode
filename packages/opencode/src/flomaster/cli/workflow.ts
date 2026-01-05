@@ -12,6 +12,8 @@ import type { WorkflowData, WorkflowEvent } from "../orchestrator/types.js"
 import { createStateManager, type StateManager } from "../state/stateManager.js"
 import { ExecutionStatus, StepExecutionStatus } from "../state/types.js"
 import { FLOMASTER_DIR, EXECUTIONS_DIR } from "../state/defaults.js"
+import { SessionPrompt } from "../../session/prompt.js"
+import { Identifier } from "../../id/id.js"
 
 /**
  * Available workflows
@@ -97,6 +99,9 @@ const WorkflowRunCommand = cmd({
         enableStateManager: true,
       })
 
+      // Track step completion times for recording
+      const stepStartTimes = new Map<string, number>()
+
       // Subscribe to workflow events
       const subscription = engine.subscribe((event: WorkflowEvent) => {
         switch (event.type) {
@@ -112,6 +117,7 @@ const WorkflowRunCommand = cmd({
             break
 
           case "STEP_STARTED":
+            stepStartTimes.set(event.stepId, Date.now())
             UI.println(
               UI.Style.TEXT_INFO_BOLD +
                 "|   " +
@@ -131,6 +137,30 @@ const WorkflowRunCommand = cmd({
                 UI.Style.TEXT_HIGHLIGHT_BOLD +
                 event.stepId,
             )
+            // Record step result immediately for crash recovery
+            if (stateManager && !args.dryRun) {
+              const startTime = stepStartTimes.get(event.stepId) ?? Date.now()
+              stateManager
+                .recordStepResult(executionId, event.stepId, {
+                  status: StepExecutionStatus.COMPLETED,
+                  outputs: event.outputs as Record<string, unknown> | undefined,
+                  startTime,
+                  endTime: Date.now(),
+                })
+                .catch(() => {
+                  // Ignore errors during step recording - workflow can continue
+                })
+            }
+            break
+
+          case "STEP_SESSION_CREATED":
+            // Record session mapping immediately for crash recovery
+            // This allows resume to find and continue the session
+            if (stateManager && !args.dryRun) {
+              stateManager.mapStepToSession(executionId, event.stepId, event.sessionID).catch(() => {
+                // Ignore errors - non-critical for workflow execution
+              })
+            }
             break
 
           case "STEP_FAILED":
@@ -161,6 +191,10 @@ const WorkflowRunCommand = cmd({
       // Create execution record if state manager is available and not dry-run
       if (stateManager && !args.dryRun) {
         await stateManager.createExecution(executionId, workflowName)
+        // Store input prompt for resume capability
+        await stateManager.mergeStepOutputs(executionId, workflowConfig.inputNodeId, {
+          prompt: message,
+        })
       }
 
       try {
@@ -236,10 +270,11 @@ const WorkflowRunCommand = cmd({
 })
 
 /**
- * Helper to get an initialized state manager
+ * Helper to get an initialized state manager.
+ * Uses Instance.worktree to ensure consistent path with workflow engine.
  */
 async function getStateManager() {
-  const executionsDir = path.join(process.cwd(), FLOMASTER_DIR, EXECUTIONS_DIR)
+  const executionsDir = path.join(Instance.worktree, FLOMASTER_DIR, EXECUTIONS_DIR)
   return createStateManager({ executionsDir })
 }
 
@@ -437,46 +472,329 @@ const WorkflowInspectCommand = cmd({
 })
 
 /**
- * Workflow resume subcommand (placeholder for now)
+ * Helper to extract text response from message parts
+ */
+function extractTextFromParts(parts: Array<{ type: string; text?: string }>): string {
+  return parts
+    .filter((part) => part.type === "text" && part.text)
+    .map((part) => part.text)
+    .join("\n")
+}
+
+/**
+ * Workflow resume subcommand
+ *
+ * Resume strategy:
+ * 1. Find step that has a session but isn't completed (the interrupted step)
+ * 2. Send "Continue" to that session to finish it (preserves context)
+ * 3. Record the result and continue with remaining steps
  */
 const WorkflowResumeCommand = cmd({
   command: "resume <executionId>",
-  describe: "Resume a failed/incomplete workflow (coming soon)",
+  describe: "Resume a failed/incomplete workflow",
   builder: (yargs: Argv) => {
-    return yargs.positional("executionId", {
-      describe: "Execution ID to resume",
-      type: "string",
-      demandOption: true,
-    })
+    return yargs
+      .positional("executionId", {
+        describe: "Execution ID to resume",
+        type: "string",
+        demandOption: true,
+      })
+      .option("dry-run", {
+        describe: "Validate without executing",
+        type: "boolean",
+        default: false,
+      })
   },
   handler: async (args) => {
     await bootstrap(process.cwd(), async () => {
       const stateManager = await getStateManager()
+      const executionId = args.executionId as string
 
-      const checkpoint = await stateManager.loadCheckpoint(args.executionId as string)
-      if (!checkpoint) {
-        UI.error(`No checkpoint found for execution: ${args.executionId}`)
+      // 1. Load execution state (don't require checkpoint)
+      const execution = await stateManager.getExecution(executionId)
+      if (!execution) {
+        UI.error(`Execution not found: ${executionId}`)
         process.exit(1)
       }
 
-      UI.println()
-      UI.println(UI.Style.TEXT_WARNING_BOLD + "Resume functionality coming soon!" + UI.Style.TEXT_NORMAL)
-      UI.println()
-      UI.println(UI.Style.TEXT_DIM + "Checkpoint found:" + UI.Style.TEXT_NORMAL)
-      UI.println(UI.Style.TEXT_DIM + "  Execution ID: " + UI.Style.TEXT_NORMAL + checkpoint.executionId)
-      UI.println(UI.Style.TEXT_DIM + "  Workflow:     " + UI.Style.TEXT_NORMAL + checkpoint.workflowName)
-      UI.println(UI.Style.TEXT_DIM + "  Status:       " + UI.Style.TEXT_NORMAL + checkpoint.execution.status)
-      UI.println(UI.Style.TEXT_DIM + "  Saved at:     " + UI.Style.TEXT_NORMAL + formatDate(checkpoint.timestamp))
+      // 2. Check if already completed
+      if (execution.status === ExecutionStatus.COMPLETED) {
+        UI.println()
+        UI.println(UI.Style.TEXT_WARNING_BOLD + "Execution already completed." + UI.Style.TEXT_NORMAL)
+        UI.println(UI.Style.TEXT_DIM + `Status: ${execution.status}`)
+        UI.println()
+        process.exit(0)
+      }
 
-      const completedSteps = Object.entries(checkpoint.execution.stepStatuses)
-        .filter(([, status]) => status === "COMPLETED")
+      // 3. Resolve workflow definition
+      const workflowConfig = workflows[execution.workflowName]
+      if (!workflowConfig) {
+        UI.error(`Workflow not found: ${execution.workflowName}. Available: ${Object.keys(workflows).join(", ")}`)
+        process.exit(1)
+      }
+
+      // 4. Load context (step outputs)
+      const context = (await stateManager.getContext(executionId)) ?? {}
+
+      // 5. Identify completed steps and find interrupted step
+      const completedStepIds = Object.entries(execution.stepStatuses)
+        .filter(([, status]) => status === StepExecutionStatus.COMPLETED)
         .map(([stepId]) => stepId)
 
-      if (completedSteps.length > 0) {
-        UI.println(UI.Style.TEXT_DIM + "  Completed:    " + UI.Style.TEXT_NORMAL + completedSteps.join(", "))
+      const allStepIds = workflowConfig.workflow.nodes.map((n) => n.id)
+      const pendingStepIds = allStepIds.filter((id) => !completedStepIds.includes(id))
+
+      // Find step that has a session mapping but isn't completed (interrupted step)
+      let interruptedStepId: string | null = null
+      let interruptedSessionId: string | null = null
+
+      for (const stepId of pendingStepIds) {
+        const sessionId = await stateManager.getSessionForStep(executionId, stepId)
+        if (sessionId) {
+          interruptedStepId = stepId
+          interruptedSessionId = sessionId
+          break
+        }
       }
 
       UI.println()
+      UI.println(UI.Style.TEXT_INFO_BOLD + "Resuming Workflow" + UI.Style.TEXT_NORMAL)
+      UI.println()
+      UI.println(UI.Style.TEXT_DIM + "Execution ID: " + UI.Style.TEXT_NORMAL + executionId)
+      UI.println(UI.Style.TEXT_DIM + "Workflow:     " + UI.Style.TEXT_NORMAL + execution.workflowName)
+      UI.println(UI.Style.TEXT_DIM + "Updated:      " + UI.Style.TEXT_NORMAL + formatDate(execution.updatedAt))
+      UI.println()
+
+      if (completedStepIds.length > 0) {
+        UI.println(
+          UI.Style.TEXT_SUCCESS_BOLD + "✓ Completed steps: " + UI.Style.TEXT_NORMAL + completedStepIds.join(", "),
+        )
+      }
+
+      if (interruptedStepId && interruptedSessionId) {
+        UI.println(
+          UI.Style.TEXT_WARNING_BOLD +
+            "⟳ Interrupted step: " +
+            UI.Style.TEXT_NORMAL +
+            interruptedStepId +
+            UI.Style.TEXT_DIM +
+            ` (session: ${interruptedSessionId.slice(0, 20)}...)`,
+        )
+      }
+
+      const remainingSteps = pendingStepIds.filter((id) => id !== interruptedStepId)
+      if (remainingSteps.length > 0) {
+        UI.println(UI.Style.TEXT_INFO_BOLD + "→ Remaining steps: " + UI.Style.TEXT_NORMAL + remainingSteps.join(", "))
+      }
+      UI.println()
+
+      // 6. Extract original prompt from context (input step)
+      const inputStepId = workflowConfig.inputNodeId
+      const originalPrompt = (context[inputStepId]?.["prompt"] as string) ?? ""
+
+      if (!originalPrompt) {
+        UI.error("Could not recover original prompt from context")
+        process.exit(1)
+      }
+
+      // 7. If there's an interrupted step, continue it first
+      if (interruptedStepId && interruptedSessionId && !args.dryRun) {
+        UI.println(UI.Style.TEXT_INFO_BOLD + "| " + UI.Style.TEXT_NORMAL + "Continuing interrupted session...")
+        UI.println()
+
+        try {
+          // Send "Continue" message to the existing session
+          const result = await SessionPrompt.prompt({
+            sessionID: interruptedSessionId,
+            messageID: Identifier.ascending("message"),
+            parts: [
+              {
+                id: Identifier.ascending("part"),
+                type: "text",
+                text: "Continue where you left off. Complete your task.",
+              },
+            ],
+          })
+
+          // Extract response
+          const response = extractTextFromParts(result.parts as Array<{ type: string; text?: string }>)
+
+          // Record the step result
+          const now = Date.now()
+          await stateManager.recordStepResult(executionId, interruptedStepId, {
+            status: StepExecutionStatus.COMPLETED,
+            outputs: { response, success: true },
+            startTime: now,
+            endTime: now,
+            sessionId: interruptedSessionId,
+          })
+
+          // Update context with the step output
+          context[interruptedStepId] = { response, success: true }
+
+          UI.println(
+            UI.Style.TEXT_SUCCESS_BOLD +
+              "|   " +
+              UI.Style.TEXT_NORMAL +
+              "Step completed: " +
+              UI.Style.TEXT_HIGHLIGHT_BOLD +
+              interruptedStepId,
+          )
+
+          // Add to completed steps for the next phase
+          completedStepIds.push(interruptedStepId)
+        } catch (error) {
+          UI.error(
+            `Failed to continue step '${interruptedStepId}' (session: ${interruptedSessionId}): ${error instanceof Error ? error.message : String(error)}`,
+          )
+          await stateManager.updateExecutionStatus(executionId, ExecutionStatus.FAILED)
+          process.exit(1)
+        }
+      } else if (interruptedStepId && args.dryRun) {
+        UI.println(
+          UI.Style.TEXT_DIM + `[DRY-RUN] Would continue session ${interruptedSessionId} for step ${interruptedStepId}`,
+        )
+      }
+
+      // 8. Check if there are remaining steps to run
+      const stepsToRun = allStepIds.filter((id) => !completedStepIds.includes(id))
+
+      if (stepsToRun.length === 0) {
+        // All steps complete
+        if (!args.dryRun) {
+          await stateManager.updateExecutionStatus(executionId, ExecutionStatus.COMPLETED)
+        }
+        UI.println()
+        UI.println(UI.Style.TEXT_SUCCESS_BOLD + "| " + UI.Style.TEXT_NORMAL + "Workflow completed!")
+
+        // Display final output
+        const agentOutput = context[workflowConfig.outputNodeId] as Record<string, unknown> | undefined
+        if (agentOutput?.["response"]) {
+          UI.println()
+          UI.println(UI.Style.TEXT_INFO_BOLD + "* " + UI.Style.TEXT_NORMAL + "Agent Response:")
+          UI.println()
+          UI.println(UI.markdown(String(agentOutput["response"])))
+        }
+        UI.println()
+        UI.println(UI.Style.TEXT_DIM + `Execution ID: ${executionId}`)
+        return
+      }
+
+      // 9. Create workflow engine for remaining steps
+      UI.println()
+      UI.println(UI.Style.TEXT_INFO_BOLD + "| " + UI.Style.TEXT_NORMAL + "Running remaining steps...")
+
+      const { engine, stateManager: engineStateManager } = await createWorkflowEngine({
+        directory: Instance.worktree,
+        enableStateManager: true,
+      })
+
+      // 10. Subscribe to events
+      const subscription = engine.subscribe((event: WorkflowEvent) => {
+        switch (event.type) {
+          case "STEP_STARTED":
+            UI.println(
+              UI.Style.TEXT_INFO_BOLD +
+                "|   " +
+                UI.Style.TEXT_NORMAL +
+                "Step started: " +
+                UI.Style.TEXT_HIGHLIGHT_BOLD +
+                event.displayName,
+            )
+            break
+          case "STEP_COMPLETED":
+            UI.println(
+              UI.Style.TEXT_SUCCESS_BOLD +
+                "|   " +
+                UI.Style.TEXT_NORMAL +
+                "Step completed: " +
+                UI.Style.TEXT_HIGHLIGHT_BOLD +
+                event.stepId,
+            )
+            break
+          case "STEP_SESSION_CREATED":
+            // Record session mapping for crash recovery
+            if (engineStateManager && !args.dryRun) {
+              engineStateManager.mapStepToSession(executionId, event.stepId, event.sessionID).catch(() => {})
+            }
+            break
+          case "STEP_FAILED":
+            UI.println(
+              UI.Style.TEXT_DANGER_BOLD +
+                "|   " +
+                UI.Style.TEXT_NORMAL +
+                "Step failed: " +
+                event.stepId +
+                " - " +
+                (event.error ?? "Unknown error"),
+            )
+            break
+          case "WORKFLOW_COMPLETED":
+            UI.println(UI.Style.TEXT_SUCCESS_BOLD + "| " + UI.Style.TEXT_NORMAL + "Workflow completed!")
+            break
+          case "WORKFLOW_FAILED":
+            UI.println(UI.Style.TEXT_DANGER_BOLD + "| " + UI.Style.TEXT_NORMAL + "Workflow failed: " + event.error)
+            break
+        }
+      })
+
+      try {
+        // 11. Create workflow with original prompt
+        const workflowWithInput = createWorkflowWithInput(workflowConfig.workflow, inputStepId, originalPrompt)
+
+        // 12. Execute with previous outputs (completed steps will be skipped)
+        const result = await engine.executeWorkflow(workflowWithInput, `${execution.workflowName}-resume`, {
+          executionId,
+          dryRun: args.dryRun,
+          previousOutputs: context,
+          variables: { prompt: originalPrompt },
+        })
+
+        UI.println()
+
+        if (result.terminateMode === "COMPLETED") {
+          // Update state
+          if (engineStateManager && !args.dryRun) {
+            for (const stepResult of result.stepResults) {
+              await engineStateManager.recordStepResult(executionId, stepResult.stepId, {
+                status: StepExecutionStatus.COMPLETED,
+                outputs: result.outputs[stepResult.stepId] as Record<string, unknown> | undefined,
+                startTime: result.startTime,
+                endTime: result.endTime,
+                sessionId: stepResult.sessionID,
+              })
+            }
+            await engineStateManager.updateExecutionStatus(executionId, ExecutionStatus.COMPLETED)
+          }
+
+          // Display final output
+          const agentOutput = result.outputs[workflowConfig.outputNodeId] as Record<string, unknown> | undefined
+          if (agentOutput?.["response"]) {
+            UI.println(UI.Style.TEXT_INFO_BOLD + "* " + UI.Style.TEXT_NORMAL + "Agent Response:")
+            UI.println()
+            UI.println(UI.markdown(String(agentOutput["response"])))
+          }
+
+          if (result.workflowSessionID) {
+            UI.println()
+            UI.println(UI.Style.TEXT_DIM + `Workflow Session: ${result.workflowSessionID}`)
+          }
+          UI.println(UI.Style.TEXT_DIM + `Execution ID: ${executionId}`)
+        } else if (result.terminateMode === "FAILED") {
+          if (engineStateManager && !args.dryRun) {
+            await engineStateManager.updateExecutionStatus(executionId, ExecutionStatus.FAILED)
+          }
+          UI.error(`Workflow failed: ${result.error}`)
+          process.exit(1)
+        }
+      } catch (error) {
+        if (engineStateManager && !args.dryRun) {
+          await engineStateManager.updateExecutionStatus(executionId, ExecutionStatus.FAILED)
+        }
+        throw error
+      } finally {
+        subscription.unsubscribe()
+      }
     })
   },
 })

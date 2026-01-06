@@ -580,6 +580,8 @@ The `bootstrap()` function is critical - it sets up the `Instance.provide()` con
 
 **Key Design Decision**: State stored at **project root** (not in `~/.local/share/`) because workflow executions are project-specific.
 
+**Future Improvement**: Move to task-centric storage (`.alfred/tasks/{taskId}/executions/`) when task management becomes more central. See "Future: Task-Centric Storage Model" in roadmap.
+
 **Reference**: `.alfred/tasks/TASK-09/task.md`
 
 ---
@@ -1501,11 +1503,33 @@ Key test files to study:
 | Step Configuration | agentType, systemPrompt, permissions | 📋 TASK-10 |
 | Workflow Files | Load from `.flomaster/workflows/` | 📋 TASK-11 |
 | **Unit Tests** | Comprehensive tests for orchestrator code | 📋 TASK-12 |
+| **Task-Centric Storage** | Move executions under `.alfred/tasks/` | 📋 Future |
 | Electron UI | Replace SolidJS TUI, enable step chatting | 📋 Planned |
 | Human-in-the-Loop | Approval gates, step interaction | 📋 Planned |
 | Workflow Cleanup | Utilities for cleaning old sessions | 📋 Planned |
 
-> **Note**: Unit tests (TASK-11) must be completed BEFORE starting Electron UI. We need a solid, tested foundation before building the UI layer.
+> **Note**: Unit tests (TASK-12) must be completed BEFORE starting Electron UI. We need a solid, tested foundation before building the UI layer.
+
+### Future: Task-Centric Storage Model
+
+**Current model**: Executions stored in `.flomaster/executions/{id}/` (separate from tasks)
+
+**Desired model**: Everything tied to a task:
+```
+.alfred/tasks/TASK-XX/
+├── task.md                    # Specification
+├── plan.md                    # Implementation plan
+├── research.md                # Research notes
+├── executions/                # All workflow runs for THIS task
+│   └── {executionId}/
+│       ├── state.json
+│       ├── context.json
+│       ├── mapping.json
+│       └── checkpoint.json
+└── outputs/                   # Final outputs/artifacts
+```
+
+**Why not now**: Current implementation works and is simpler. Ad-hoc workflow runs (without a task) need a fallback location. Will revisit when task management becomes more central to the workflow.
 
 ---
 

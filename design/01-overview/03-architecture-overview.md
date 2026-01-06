@@ -1,13 +1,22 @@
-# FloMaster - System Architecture
+# FloMaster - System Architecture (DEPRECATED)
+
+> ⚠️ **DEPRECATED**: This document has been superseded by [04-opencode-architecture.md](./04-opencode-architecture.md).
+>
+> This original architecture was designed for a standalone FloMaster application using the OpenCode SDK. The project has pivoted to forking OpenCode directly, making this document obsolete.
+>
+> **Do not use this document for new development.**
+
+---
 
 > **Document Version**: 1.0
 > **Last Updated**: 2025-12-25
-> **Status**: Draft
+> **Status**: ~~Draft~~ **DEPRECATED**
 > **Owner**: Architecture Team
 > **Related Documents**:
 >
 > - [Product Overview](./01-product-overview.md)
 > - [Requirements Overview](./02-requirements-overview.md)
+> - **[NEW ARCHITECTURE](./04-opencode-architecture.md)** ← Use this instead
 
 ---
 

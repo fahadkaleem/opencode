@@ -7,7 +7,7 @@
 
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
-import { Session } from "../../session/index.js"
+import { Session } from "opencode/session/index"
 import {
   CHECKPOINT_FILENAME,
   CHECKPOINT_VERSION,

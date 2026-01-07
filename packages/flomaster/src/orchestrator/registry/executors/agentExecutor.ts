@@ -17,13 +17,13 @@
  * - Workflow cleanup utilities (to be implemented)
  */
 
-import { Log } from "../../../../util/log.js"
-import { Session } from "../../../../session/index.js"
-import { SessionPrompt } from "../../../../session/prompt.js"
-import { Identifier } from "../../../../id/id.js"
-import { Agent } from "../../../../agent/agent.js"
-import { Provider } from "../../../../provider/provider.js"
-import { defer } from "../../../../util/defer.js"
+import { Log } from "opencode/util/log"
+import { Session } from "opencode/session/index"
+import { SessionPrompt } from "opencode/session/prompt"
+import { Identifier } from "opencode/id/id"
+import { Agent } from "opencode/agent/agent"
+import { Provider } from "opencode/provider/provider"
+import { defer } from "opencode/util/defer"
 import type { AgentConfig, ExecuteStepOutput, ParsedStep } from "../../types.js"
 import type { ExecutorContext, ExecutorDependencies, ExecutorOptions, StepExecutor } from "../types.js"
 

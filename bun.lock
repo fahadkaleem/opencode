@@ -229,6 +229,25 @@
         "vite": "catalog:",
       },
     },
+    "packages/flomaster": {
+      "name": "@opencode-ai/flomaster",
+      "version": "0.1.0",
+      "bin": {
+        "flomaster": "./bin/flomaster",
+      },
+      "dependencies": {
+        "opencode": "workspace:*",
+        "xstate": "^5.19.0",
+        "yargs": "18.0.0",
+        "zod": "catalog:",
+      },
+      "devDependencies": {
+        "@tsconfig/bun": "catalog:",
+        "@types/bun": "catalog:",
+        "@types/yargs": "17.0.33",
+        "typescript": "catalog:",
+      },
+    },
     "packages/function": {
       "name": "@opencode-ai/function",
       "version": "1.1.8",
@@ -320,7 +339,6 @@
         "vscode-jsonrpc": "8.2.1",
         "web-tree-sitter": "0.25.10",
         "xdg-basedir": "5.1.0",
-        "xstate": "^5.19.0",
         "yargs": "18.0.0",
         "zod": "catalog:",
         "zod-to-json-schema": "3.24.5",
@@ -1179,6 +1197,8 @@
     "@opencode-ai/desktop": ["@opencode-ai/desktop@workspace:packages/desktop"],
 
     "@opencode-ai/enterprise": ["@opencode-ai/enterprise@workspace:packages/enterprise"],
+
+    "@opencode-ai/flomaster": ["@opencode-ai/flomaster@workspace:packages/flomaster"],
 
     "@opencode-ai/function": ["@opencode-ai/function@workspace:packages/function"],
 

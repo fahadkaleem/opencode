@@ -4,6 +4,8 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## Project Overview
 
+This is a fork of OpenCode with **FloMaster** - a workflow orchestration system built on top of OpenCode. FloMaster is a separate package (`packages/flomaster`) that coordinates multi-step AI tasks using a DAG execution model.
+
 OpenCode is an open-source AI coding agent with a TUI (Terminal UI), desktop app, and client-server architecture. It supports multiple LLM providers (Claude, OpenAI, Google, local models) and features LSP integration.
 
 ## Development Commands
@@ -24,14 +26,15 @@ bun dev .
 # Type checking (uses turbo)
 bun turbo typecheck
 
-# Run tests (in packages/opencode)
-cd packages/opencode && bun test
+# Run tests
+cd packages/opencode && bun test        # OpenCode tests
+cd packages/flomaster && bun test       # FloMaster tests (372 tests)
 
 # Run a single test file
-cd packages/opencode && bun test src/orchestrator/engine/factory.test.ts
+cd packages/flomaster && bun test src/orchestrator/engine/factory.test.ts
 
 # Run tests for orchestrator module
-cd packages/opencode && bun test src/orchestrator
+cd packages/flomaster && bun test src/orchestrator
 
 # Build standalone executable
 ./packages/opencode/script/build.ts --single
@@ -48,13 +51,19 @@ cd packages/opencode && bun test src/orchestrator
 Before merging code, ensure these checks pass:
 
 1. **Type checking**: `bun turbo typecheck` - must pass with no errors
-2. **Tests**: `cd packages/opencode && bun test` - all tests must pass
-3. **Linting**: Code follows STYLE_GUIDE.md conventions
+2. **OpenCode tests**: `cd packages/opencode && bun test` - all tests must pass
+3. **FloMaster tests**: `cd packages/flomaster && bun test` - all 372 tests must pass
+4. **Linting**: Code follows STYLE_GUIDE.md conventions
 
 ## Architecture
 
 ### Monorepo Structure (Bun workspaces with Turbo)
 
+- **packages/flomaster** - FloMaster workflow orchestration (separate package)
+  - `src/cli/` - Standalone CLI (workflow run, list, inspect, resume)
+  - `src/orchestrator/` - DAG execution engine, XState v5 machine, step executors
+  - `src/state/` - Workflow state persistence (StateManager)
+  - `src/index.ts` - Public exports
 - **packages/opencode** - Core CLI and server
   - `src/cli/cmd/` - CLI commands (run, serve, auth, mcp, etc.)
   - `src/cli/cmd/tui/` - TUI built with SolidJS + [opentui](https://github.com/sst/opentui)
@@ -65,7 +74,6 @@ Before merging code, ensure these checks pass:
   - `src/tool/` - Agent tools (bash, edit, read, grep, glob, websearch, etc.)
   - `src/mcp/` - Model Context Protocol server support
   - `src/lsp/` - Language Server Protocol integration
-  - `src/orchestrator/` - Workflow orchestration engine (XState v5)
 - **packages/plugin** - Plugin SDK (`@opencode-ai/plugin`)
 - **packages/sdk/js** - TypeScript SDK (`@opencode-ai/sdk`)
 - **packages/desktop** - Tauri desktop app

@@ -384,14 +384,48 @@ export type AgentConfig = {
   readonly agentType: string
   /** Model in "provider/model" format, e.g. "anthropic/claude-sonnet-4-20250514" */
   readonly model?: string
-  /** Temperature for generation */
-  readonly temperature?: number
-  /** Maximum tokens to generate */
-  readonly maxTokens?: number
   /** Additional system prompt (augments agent's base prompt) */
   readonly systemPrompt?: string
   /** Tool overrides - true to enable, false to disable */
   readonly tools?: Readonly<Record<string, boolean>>
+  /** Step timeout in milliseconds (overrides workflow default) */
+  readonly timeoutMs?: number
+  /** Max retry attempts for this step (overrides workflow default) */
+  readonly maxRetries?: number
+}
+
+/**
+ * Consistent output schema returned by all step executors.
+ * Enables predictable downstream consumption via {{stepId.field}} interpolation.
+ */
+export type StepOutput = {
+  /** Whether the step completed successfully */
+  readonly success: boolean
+  /** Human-readable summary of what was done (e.g., "Created 3 files") */
+  readonly summary: string
+  /** File paths created or modified by this step */
+  readonly artifacts: readonly string[]
+  /** Full agent text response (for downstream interpolation) */
+  readonly response: string
+}
+
+/**
+ * Default configuration values for all steps in a workflow.
+ * Individual steps can override these values.
+ */
+export type WorkflowDefaults = {
+  /** Default timeout for all steps (default: 300000ms = 5 minutes) */
+  readonly timeoutMs: number
+  /** Default max retries for all steps (default: 3) */
+  readonly maxRetries: number
+  /** Default model for all steps (optional) */
+  readonly model?: string
+}
+
+/** Default workflow configuration values */
+export const DEFAULT_WORKFLOW_DEFAULTS: WorkflowDefaults = {
+  timeoutMs: 300000, // 5 minutes
+  maxRetries: 3,
 }
 
 /**

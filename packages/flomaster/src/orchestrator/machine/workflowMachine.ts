@@ -9,6 +9,7 @@ import { assign, fromPromise, setup } from "xstate"
 import { executeStep } from "../actors/stepActor.js"
 import { getNextRunnableSteps } from "../parser/workflowParser.js"
 import type {
+  AgentConfig,
   ExecuteStepInput,
   ExecuteStepOutput,
   LoopState,
@@ -50,7 +51,14 @@ export const workflowMachine = setup({
       if (!hasOutputComplete(event)) return false
       return event.output.complete === false
     },
-    canRetry: ({ context }) => context.retryCount < context.maxRetries,
+    canRetry: ({ context }) => {
+      // Get maxRetries from current step config, fall back to workflow default
+      const stepConfig = context.currentStepData?.config
+      const stepMaxRetries = stepConfig?.type === "Agent" ? (stepConfig.config as AgentConfig).maxRetries : undefined
+      const maxRetries = stepMaxRetries ?? context.maxRetries
+
+      return context.retryCount < maxRetries
+    },
     isStepComplete: ({ event }) => {
       if (!hasOutputComplete(event)) return false
       return event.output.complete === true

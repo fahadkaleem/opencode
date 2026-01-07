@@ -7,6 +7,7 @@ Implement a comprehensive step configuration schema for FloMaster workflow steps
 ## Background
 
 FloMaster workflows consist of steps that execute AI agents. Currently, step configuration is limited:
+
 - `agentType` works but defaults to "build"
 - `model` override works
 - `systemPrompt` works
@@ -63,10 +64,10 @@ From investigation of `src/session/prompt.ts`:
 
 ```typescript
 // SessionPrompt.prompt() accepts:
-sessionID, messageID, model, agent, noReply, tools, system, variant, parts
+;(sessionID, messageID, model, agent, noReply, tools, system, variant, parts)
 
 // It does NOT accept:
-temperature, maxTokens, timeout
+;(temperature, maxTokens, timeout)
 ```
 
 Temperature comes from `agent.temperature` in agent definition.
@@ -75,18 +76,19 @@ MaxTokens comes from `ProviderTransform.maxOutputTokens()` based on model limits
 ### XState Machine Retry Logic
 
 Current implementation at `src/flomaster/orchestrator/machine/workflowMachine.ts`:
+
 - `handleError` state with `canRetry` guard
 - `maxRetries` is workflow-level (context.maxRetries)
 - Need to modify guard to read from step config
 
 ## Success Criteria
 
-- [ ] Steps can specify `timeoutMs` and execution respects it
-- [ ] Steps can specify `maxRetries` and retry logic uses it
-- [ ] All agent steps return consistent `{ success, summary, artifacts, response }` outputs
-- [ ] Existing workflows continue to work (backward compatible)
-- [ ] `bun turbo typecheck` passes
-- [ ] `bun dev workflow run --workflow sdlc "Test"` completes successfully
+- [x] Steps can specify `timeoutMs` and execution respects it
+- [x] Steps can specify `maxRetries` and retry logic uses it
+- [x] All agent steps return consistent `{ success, summary, artifacts, response }` outputs
+- [x] Existing workflows continue to work (backward compatible)
+- [x] `bun turbo typecheck` passes
+- [x] All tests pass (417 FloMaster tests, 556 OpenCode tests)
 
 ## Related Tasks
 

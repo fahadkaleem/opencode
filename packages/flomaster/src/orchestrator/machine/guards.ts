@@ -5,15 +5,15 @@
  * Guards determine whether transitions should occur.
  */
 
-import type { WorkflowContext } from '../types.js';
+import type { AgentConfig, WorkflowContext } from "../types.js"
 
 /**
  * Guard parameters from XState.
  */
 type GuardParams = {
-  context: WorkflowContext;
-  event: Record<string, unknown>;
-};
+  context: WorkflowContext
+  event: Record<string, unknown>
+}
 
 /**
  * Type guard to check if event has output with complete property.
@@ -21,15 +21,11 @@ type GuardParams = {
  * @param event - Event to check
  * @returns True if event has output.complete boolean
  */
-export function hasOutputComplete(
-  event: unknown,
-): event is { output: { complete: boolean } } {
-  if (typeof event !== 'object' || event === null) return false;
-  const e = event as Record<string, unknown>;
-  if (typeof e['output'] !== 'object' || e['output'] === null) return false;
-  return (
-    typeof (e['output'] as Record<string, unknown>)['complete'] === 'boolean'
-  );
+export function hasOutputComplete(event: unknown): event is { output: { complete: boolean } } {
+  if (typeof event !== "object" || event === null) return false
+  const e = event as Record<string, unknown>
+  if (typeof e["output"] !== "object" || e["output"] === null) return false
+  return typeof (e["output"] as Record<string, unknown>)["complete"] === "boolean"
 }
 
 /**
@@ -40,7 +36,7 @@ export function hasOutputComplete(
  * @returns True if pending steps remain, false otherwise
  */
 export function hasNextStep({ context }: GuardParams): boolean {
-  return context.pendingSteps.length > 0;
+  return context.pendingSteps.length > 0
 }
 
 /**
@@ -52,7 +48,7 @@ export function hasNextStep({ context }: GuardParams): boolean {
  * @returns True if currentStep and currentStepData are both set
  */
 export function hasCurrentStep({ context }: GuardParams): boolean {
-  return context.currentStep !== null && context.currentStepData !== null;
+  return context.currentStep !== null && context.currentStepData !== null
 }
 
 /**
@@ -63,7 +59,7 @@ export function hasCurrentStep({ context }: GuardParams): boolean {
  * @returns True if graph is loaded
  */
 export function hasGraph({ context }: GuardParams): boolean {
-  return context.graph !== null;
+  return context.graph !== null
 }
 
 /**
@@ -77,8 +73,8 @@ export function hasGraph({ context }: GuardParams): boolean {
  * @returns True if current step type is ConditionalRouter
  */
 export function guardIsConditionalStep({ context }: GuardParams): boolean {
-  if (!context.currentStepData) return false;
-  return context.currentStepData.type === 'ConditionalRouter';
+  if (!context.currentStepData) return false
+  return context.currentStepData.type === "ConditionalRouter"
 }
 
 /**
@@ -92,8 +88,8 @@ export function guardIsConditionalStep({ context }: GuardParams): boolean {
  * @returns True if current step type is Loop
  */
 export function guardIsLoopStep({ context }: GuardParams): boolean {
-  if (!context.currentStepData) return false;
-  return context.currentStepData.type === 'Loop';
+  if (!context.currentStepData) return false
+  return context.currentStepData.type === "Loop"
 }
 
 /**
@@ -107,8 +103,8 @@ export function guardIsLoopStep({ context }: GuardParams): boolean {
  * @returns True if current step type is SubFlow
  */
 export function guardIsSubFlowStep({ context }: GuardParams): boolean {
-  if (!context.currentStepData) return false;
-  return context.currentStepData.type === 'SubFlow';
+  if (!context.currentStepData) return false
+  return context.currentStepData.type === "SubFlow"
 }
 
 /**
@@ -119,10 +115,10 @@ export function guardIsSubFlowStep({ context }: GuardParams): boolean {
  * @returns True if loop has more iterations remaining
  */
 export function isLoopContinue({ context }: GuardParams): boolean {
-  if (context.currentStep == null) return false;
-  const loopState = context.loopStates.get(context.currentStep);
-  if (loopState?.initialized !== true) return false;
-  return loopState.index < loopState.data.length - 1;
+  if (context.currentStep == null) return false
+  const loopState = context.loopStates.get(context.currentStep)
+  if (loopState?.initialized !== true) return false
+  return loopState.index < loopState.data.length - 1
 }
 
 /**
@@ -136,10 +132,10 @@ export function isLoopContinue({ context }: GuardParams): boolean {
  * @returns True if loop index has reached or exceeded data length
  */
 export function guardIsLoopComplete({ context }: GuardParams): boolean {
-  if (context.currentStep == null) return false;
-  const loopState = context.loopStates.get(context.currentStep);
-  if (loopState?.initialized !== true) return false;
-  return loopState.index >= loopState.data.length;
+  if (context.currentStep == null) return false
+  const loopState = context.loopStates.get(context.currentStep)
+  if (loopState?.initialized !== true) return false
+  return loopState.index >= loopState.data.length
 }
 
 /**
@@ -150,9 +146,9 @@ export function guardIsLoopComplete({ context }: GuardParams): boolean {
  * @returns True if the conditional branch is 'true'
  */
 export function isConditionalTrue({ event }: GuardParams): boolean {
-  if (event['output'] == null) return false;
-  const output = event['output'] as Record<string, unknown>;
-  return output['branch'] === 'true';
+  if (event["output"] == null) return false
+  const output = event["output"] as Record<string, unknown>
+  return output["branch"] === "true"
 }
 
 /**
@@ -163,20 +159,26 @@ export function isConditionalTrue({ event }: GuardParams): boolean {
  * @returns True if the conditional branch is 'false'
  */
 export function isConditionalFalse({ event }: GuardParams): boolean {
-  if (event['output'] == null) return false;
-  const output = event['output'] as Record<string, unknown>;
-  return output['branch'] === 'false';
+  if (event["output"] == null) return false
+  const output = event["output"] as Record<string, unknown>
+  return output["branch"] === "false"
 }
 
 /**
  * Checks if retry is allowed based on current retry count.
+ * Uses per-step maxRetries if configured, otherwise falls back to workflow default.
  *
  * @param params - Guard parameters from XState
  * @param params.context - Current workflow context
  * @returns True if retryCount is less than maxRetries
  */
 export function canRetry({ context }: GuardParams): boolean {
-  return context.retryCount < context.maxRetries;
+  // Get maxRetries from current step config, fall back to workflow default
+  const stepConfig = context.currentStepData?.config
+  const stepMaxRetries = stepConfig?.type === "Agent" ? (stepConfig.config as AgentConfig).maxRetries : undefined
+  const maxRetries = stepMaxRetries ?? context.maxRetries
+
+  return context.retryCount < maxRetries
 }
 
 /**
@@ -187,8 +189,8 @@ export function canRetry({ context }: GuardParams): boolean {
  * @returns True if completedSteps size equals graph nodes size
  */
 export function isWorkflowComplete({ context }: GuardParams): boolean {
-  if (!context.graph) return false;
-  return context.completedSteps.size === context.graph.nodes.size;
+  if (!context.graph) return false
+  return context.completedSteps.size === context.graph.nodes.size
 }
 
 /**
@@ -199,7 +201,7 @@ export function isWorkflowComplete({ context }: GuardParams): boolean {
  * @returns True if error is not null
  */
 export function hasError({ context }: GuardParams): boolean {
-  return context.error !== null;
+  return context.error !== null
 }
 
 /**
@@ -210,7 +212,7 @@ export function hasError({ context }: GuardParams): boolean {
  * @returns True if dryRun flag is set
  */
 export function isDryRun({ context }: GuardParams): boolean {
-  return context.dryRun;
+  return context.dryRun
 }
 
 /**
@@ -221,9 +223,9 @@ export function isDryRun({ context }: GuardParams): boolean {
  * @returns True if output.complete is true
  */
 export function isStepComplete({ event }: GuardParams): boolean {
-  if (!hasOutputComplete(event)) return false;
-  const e = event as Record<string, unknown>;
-  return (e['output'] as Record<string, unknown>)['complete'] === true;
+  if (!hasOutputComplete(event)) return false
+  const e = event as Record<string, unknown>
+  return (e["output"] as Record<string, unknown>)["complete"] === true
 }
 
 /**
@@ -239,30 +241,30 @@ export function isStepComplete({ event }: GuardParams): boolean {
  * @returns True if the current step requires human approval
  */
 export function requiresApproval({ context }: GuardParams): boolean {
-  const step = context.currentStepData;
-  if (!step) return false;
+  const step = context.currentStepData
+  if (!step) return false
 
-  const stepType = step.type;
-  if (stepType === 'HumanInput' || stepType === 'Approval') {
-    return true;
+  const stepType = step.type
+  if (stepType === "HumanInput" || stepType === "Approval") {
+    return true
   }
 
-  const config = step.config;
-  if (typeof config === 'object') {
-    const configObj = config as { config?: { requiresApproval?: boolean } };
+  const config = step.config
+  if (typeof config === "object") {
+    const configObj = config as { config?: { requiresApproval?: boolean } }
     if (configObj.config?.requiresApproval === true) {
-      return true;
+      return true
     }
   }
 
-  const inputs = step.inputs;
-  if (typeof inputs === 'object') {
-    if ((inputs as Record<string, unknown>)['requiresApproval'] === true) {
-      return true;
+  const inputs = step.inputs
+  if (typeof inputs === "object") {
+    if ((inputs as Record<string, unknown>)["requiresApproval"] === true) {
+      return true
     }
   }
 
-  return false;
+  return false
 }
 
 /**
@@ -289,6 +291,6 @@ export const guards = {
   isDryRun,
   isStepComplete,
   requiresApproval,
-};
+}
 
-export type GuardType = keyof typeof guards;
+export type GuardType = keyof typeof guards

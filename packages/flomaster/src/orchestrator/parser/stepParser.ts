@@ -186,26 +186,27 @@ function extractAgentConfig(step: StepData): AgentConfig {
 
   const agentTypeField = getTemplateField(template, "agent_type")
   const modelField = getTemplateField(template, "model")
-  const temperatureField = getTemplateField(template, "temperature")
-  const maxTokensField = getTemplateField(template, "max_tokens")
   const systemPromptField = getTemplateField(template, "system_prompt")
   const toolsField = getTemplateField(template, "tools")
+  // New fields for per-step configuration
+  const timeoutField = getTemplateField(template, "timeout_ms")
+  const maxRetriesField = getTemplateField(template, "max_retries")
 
   const model = modelField?.value as string | undefined
-  const temperature = temperatureField?.value as number | undefined
-  const maxTokens = maxTokensField?.value as number | undefined
   const systemPrompt = systemPromptField?.value as string | undefined
-  // tools is now Record<string, boolean> - true to enable, false to disable
+  // tools is Record<string, boolean> - true to enable, false to disable
   const tools = toolsField?.value as Record<string, boolean> | undefined
+  const timeoutMs = timeoutField?.value as number | undefined
+  const maxRetries = maxRetriesField?.value as number | undefined
 
   return {
     // Default to "build" agent - the standard full-access agent in OpenCode
     agentType: (agentTypeField?.value as string | undefined) ?? "build",
     ...(model !== undefined && { model }),
-    ...(temperature !== undefined && { temperature }),
-    ...(maxTokens !== undefined && { maxTokens }),
     ...(systemPrompt !== undefined && { systemPrompt }),
     ...(tools !== undefined && { tools }),
+    ...(timeoutMs !== undefined && { timeoutMs }),
+    ...(maxRetries !== undefined && { maxRetries }),
   }
 }
 

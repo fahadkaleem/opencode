@@ -8,30 +8,30 @@ Implement per-step configuration for timeout, retries, and consistent output sch
 
 ### What Works
 
-| Field | Location | Status |
-|-------|----------|--------|
-| `agentType` | `AgentConfig.agentType` | ✅ Works, defaults to "build" |
-| `model` | `AgentConfig.model` | ✅ Works, "provider/model" format |
-| `systemPrompt` | `AgentConfig.systemPrompt` | ✅ Works, passed to SessionPrompt |
-| `tools` | `AgentConfig.tools` | ✅ Works, converted to permission rules |
+| Field          | Location                   | Status                                  |
+| -------------- | -------------------------- | --------------------------------------- |
+| `agentType`    | `AgentConfig.agentType`    | ✅ Works, defaults to "build"           |
+| `model`        | `AgentConfig.model`        | ✅ Works, "provider/model" format       |
+| `systemPrompt` | `AgentConfig.systemPrompt` | ✅ Works, passed to SessionPrompt       |
+| `tools`        | `AgentConfig.tools`        | ✅ Works, converted to permission rules |
 
 ### What's Defined But Not Used
 
-| Field | Location | Issue |
-|-------|----------|-------|
-| `temperature` | `types.ts:387` | Defined but SessionPrompt doesn't accept it |
-| `maxTokens` | `types.ts:388` | Defined but resolved from model limits |
-| `timeout` | `ExecutorOptions.timeout` | Defined at `registry/types.ts:44` but not implemented |
+| Field         | Location                  | Issue                                                 |
+| ------------- | ------------------------- | ----------------------------------------------------- |
+| `temperature` | `types.ts:387`            | Defined but SessionPrompt doesn't accept it           |
+| `maxTokens`   | `types.ts:388`            | Defined but resolved from model limits                |
+| `timeout`     | `ExecutorOptions.timeout` | Defined at `registry/types.ts:44` but not implemented |
 
 ### What's Missing
 
-| Feature | Impact |
-|---------|--------|
-| Per-step timeout | Steps run indefinitely or use global timeout |
-| Per-step maxRetries | All steps use workflow-level retry count |
+| Feature                  | Impact                                                 |
+| ------------------------ | ------------------------------------------------------ |
+| Per-step timeout         | Steps run indefinitely or use global timeout           |
+| Per-step maxRetries      | All steps use workflow-level retry count               |
 | Consistent output schema | Steps return ad-hoc `{ response, toolCalls, success }` |
-| Artifacts tracking | File modifications not extracted from tool calls |
-| Summary generation | No truncated summary, only full response |
+| Artifacts tracking       | File modifications not extracted from tool calls       |
+| Summary generation       | No truncated summary, only full response               |
 
 ### Key Discoveries
 
@@ -93,18 +93,20 @@ Clean up AgentConfig by removing unsupported fields and adding new ones. Define 
 **File:** `src/flomaster/orchestrator/types.ts`
 
 **Current** (lines 382-395):
+
 ```typescript
 export type AgentConfig = {
   readonly agentType: string
   readonly model?: string
-  readonly temperature?: number      // REMOVE - not supported
-  readonly maxTokens?: number        // REMOVE - not supported
+  readonly temperature?: number // REMOVE - not supported
+  readonly maxTokens?: number // REMOVE - not supported
   readonly systemPrompt?: string
   readonly tools?: Record<string, boolean>
 }
 ```
 
 **New:**
+
 ```typescript
 export type AgentConfig = {
   readonly agentType: string
@@ -112,8 +114,8 @@ export type AgentConfig = {
   readonly systemPrompt?: string
   readonly tools?: Record<string, boolean>
   // New fields
-  readonly timeoutMs?: number        // Step timeout in milliseconds
-  readonly maxRetries?: number       // Max retry attempts for this step
+  readonly timeoutMs?: number // Step timeout in milliseconds
+  readonly maxRetries?: number // Max retry attempts for this step
 }
 ```
 
@@ -122,6 +124,7 @@ export type AgentConfig = {
 **File:** `src/flomaster/orchestrator/types.ts`
 
 **Add after AgentConfig:**
+
 ```typescript
 /**
  * Consistent output schema returned by all step executors.
@@ -144,6 +147,7 @@ export type StepOutput = {
 **File:** `src/flomaster/orchestrator/types.ts`
 
 **Add after StepOutput:**
+
 ```typescript
 /**
  * Default configuration values for all steps in a workflow.
@@ -159,7 +163,7 @@ export type WorkflowDefaults = {
 }
 
 export const DEFAULT_WORKFLOW_DEFAULTS: WorkflowDefaults = {
-  timeoutMs: 300000,  // 5 minutes
+  timeoutMs: 300000, // 5 minutes
   maxRetries: 3,
 }
 ```
@@ -168,12 +172,12 @@ export const DEFAULT_WORKFLOW_DEFAULTS: WorkflowDefaults = {
 
 #### Automated Verification
 
-- [ ] Type checking passes: `bun turbo typecheck`
-- [ ] No import errors in dependent files
+- [x] Type checking passes: `bun turbo typecheck`
+- [x] No import errors in dependent files
 
 #### Manual Verification
 
-- [ ] Types are correctly exported from `types.ts`
+- [x] Types are correctly exported from `types.ts`
 
 ---
 
@@ -255,9 +259,13 @@ function combineAbortSignals(...signals: AbortSignal[]): AbortSignal {
       controller.abort(signal.reason)
       return controller.signal
     }
-    signal.addEventListener("abort", () => {
-      controller.abort(signal.reason)
-    }, { once: true })
+    signal.addEventListener(
+      "abort",
+      () => {
+        controller.abort(signal.reason)
+      },
+      { once: true },
+    )
   }
 
   return controller.signal
@@ -267,6 +275,7 @@ function combineAbortSignals(...signals: AbortSignal[]): AbortSignal {
 **Update the abort signal usage (around line 222-228):**
 
 Replace:
+
 ```typescript
 if (options?.signal) {
   options.signal.addEventListener("abort", cancel)
@@ -274,6 +283,7 @@ if (options?.signal) {
 ```
 
 With:
+
 ```typescript
 combinedSignal.addEventListener("abort", cancel, { once: true })
 ```
@@ -282,8 +292,8 @@ combinedSignal.addEventListener("abort", cancel, { once: true })
 
 #### Automated Verification
 
-- [ ] Type checking passes: `bun turbo typecheck`
-- [ ] Existing tests pass: `cd packages/opencode && bun test`
+- [x] Type checking passes: `bun turbo typecheck`
+- [x] Existing tests pass: `cd packages/opencode && bun test`
 
 #### Manual Verification
 
@@ -309,11 +319,13 @@ Modify the XState machine's `canRetry` guard to read maxRetries from the current
 **File:** `src/flomaster/orchestrator/machine/workflowMachine.ts`
 
 **Current** (line 53):
+
 ```typescript
 canRetry: ({ context }) => context.retryCount < context.maxRetries,
 ```
 
 **New:**
+
 ```typescript
 canRetry: ({ context }) => {
   // Get maxRetries from current step config, fall back to workflow default
@@ -328,6 +340,7 @@ canRetry: ({ context }) => {
 ```
 
 **Add import at top of file:**
+
 ```typescript
 import type { AgentConfig } from "../types.js"
 ```
@@ -344,9 +357,7 @@ import type { AgentConfig } from "../types.js"
 export function canRetry({ context }: GuardParams): boolean {
   // Get maxRetries from current step config, fall back to workflow default
   const stepConfig = context.currentStepData?.config
-  const stepMaxRetries = stepConfig?.type === "Agent"
-    ? (stepConfig.config as AgentConfig).maxRetries
-    : undefined
+  const stepMaxRetries = stepConfig?.type === "Agent" ? (stepConfig.config as AgentConfig).maxRetries : undefined
   const maxRetries = stepMaxRetries ?? context.maxRetries
 
   return context.retryCount < maxRetries
@@ -357,7 +368,7 @@ export function canRetry({ context }: GuardParams): boolean {
 
 #### Automated Verification
 
-- [ ] Type checking passes: `bun turbo typecheck`
+- [x] Type checking passes: `bun turbo typecheck`
 
 #### Manual Verification
 
@@ -385,9 +396,7 @@ Update agentExecutor to return consistent `StepOutput` structure with summary an
  * Extracts file artifacts from completed tool calls.
  * Looks for edit, write, and patch tools that modified files.
  */
-function extractArtifactsFromToolCalls(
-  toolCalls: Array<{ name: string; args: unknown; result: unknown }>,
-): string[] {
+function extractArtifactsFromToolCalls(toolCalls: Array<{ name: string; args: unknown; result: unknown }>): string[] {
   const artifacts: string[] = []
 
   for (const tc of toolCalls) {
@@ -428,9 +437,8 @@ function generateSummary(response: string, artifacts: string[]): string {
 
   // Add artifact info if present
   if (artifacts.length > 0) {
-    const artifactInfo = artifacts.length === 1
-      ? `Modified 1 file: ${artifacts[0]}`
-      : `Modified ${artifacts.length} files`
+    const artifactInfo =
+      artifacts.length === 1 ? `Modified 1 file: ${artifacts[0]}` : `Modified ${artifacts.length} files`
     summary = artifactInfo + (summary ? `. ${summary}` : "")
   }
 
@@ -459,6 +467,7 @@ return {
 ```
 
 **New:**
+
 ```typescript
 // Extract artifacts from tool calls
 const artifacts = extractArtifactsFromToolCalls(toolCalls)
@@ -504,7 +513,7 @@ return {
 
 #### Automated Verification
 
-- [ ] Type checking passes: `bun turbo typecheck`
+- [x] Type checking passes: `bun turbo typecheck`
 
 #### Manual Verification
 
@@ -563,11 +572,11 @@ function extractAgentConfig(step: StepData): AgentConfig {
 
 #### Automated Verification
 
-- [ ] Type checking passes: `bun turbo typecheck`
+- [x] Type checking passes: `bun turbo typecheck`
 
 #### Manual Verification
 
-- [ ] Parser correctly extracts new fields from workflow JSON
+- [x] Parser correctly extracts new fields from workflow JSON
 
 ---
 
@@ -635,7 +644,7 @@ Update the SDLC workflow to demonstrate the new configuration options.
 
 #### Automated Verification
 
-- [ ] Type checking passes: `bun turbo typecheck`
+- [x] Type checking passes: `bun turbo typecheck`
 - [ ] SDLC workflow executes: `bun dev workflow run --workflow sdlc --dry-run "Test"`
 
 #### Manual Verification
@@ -650,6 +659,7 @@ Update the SDLC workflow to demonstrate the new configuration options.
 ### Unit Tests
 
 **To be added in TASK-12:**
+
 - `agentExecutor.test.ts`: Test timeout handling, output extraction
 - `workflowMachine.test.ts`: Test per-step retry logic
 - `stepParser.test.ts`: Test parsing new config fields
@@ -657,6 +667,7 @@ Update the SDLC workflow to demonstrate the new configuration options.
 ### Integration Tests
 
 **Manual testing for now:**
+
 1. Run test workflow with various timeout values
 2. Force errors to test retry behavior
 3. Verify output structure in state files
@@ -664,6 +675,7 @@ Update the SDLC workflow to demonstrate the new configuration options.
 ### Manual Testing Steps
 
 1. **Test timeout**:
+
    ```bash
    # Create a step that takes too long
    bun dev workflow run "Count to 1000 one by one, very slowly"
@@ -671,6 +683,7 @@ Update the SDLC workflow to demonstrate the new configuration options.
    ```
 
 2. **Test retries**:
+
    ```bash
    # Force an error (e.g., invalid agent type temporarily)
    # Verify retry attempts in logs

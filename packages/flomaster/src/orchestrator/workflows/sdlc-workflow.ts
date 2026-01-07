@@ -48,6 +48,7 @@ export const sdlcWorkflow: WorkflowData = {
     },
 
     // Step 1: Research Agent
+    // Long timeout, few retries (read-only, expensive operation)
     {
       id: "research",
       type: "genericNode",
@@ -82,6 +83,22 @@ Provide a structured summary of your findings.`,
               isRequired: true,
               isAdvanced: false,
             },
+            timeout_ms: {
+              name: "timeout_ms",
+              displayName: "Timeout (ms)",
+              type: "number",
+              value: 180000, // 3 minutes
+              isRequired: false,
+              isAdvanced: true,
+            },
+            max_retries: {
+              name: "max_retries",
+              displayName: "Max Retries",
+              type: "number",
+              value: 1, // Only 1 retry for research
+              isRequired: false,
+              isAdvanced: true,
+            },
           },
           outputs: [{ name: "response", displayName: "Research Findings", method: "output", types: ["string"] }],
         },
@@ -89,6 +106,7 @@ Provide a structured summary of your findings.`,
     },
 
     // Step 2: Plan Agent
+    // Medium timeout, some retries
     {
       id: "plan",
       type: "genericNode",
@@ -126,6 +144,22 @@ Include:
               isRequired: true,
               isAdvanced: false,
             },
+            timeout_ms: {
+              name: "timeout_ms",
+              displayName: "Timeout (ms)",
+              type: "number",
+              value: 120000, // 2 minutes
+              isRequired: false,
+              isAdvanced: true,
+            },
+            max_retries: {
+              name: "max_retries",
+              displayName: "Max Retries",
+              type: "number",
+              value: 2, // 2 retries for planning
+              isRequired: false,
+              isAdvanced: true,
+            },
           },
           outputs: [{ name: "response", displayName: "Implementation Plan", method: "output", types: ["string"] }],
         },
@@ -133,6 +167,7 @@ Include:
     },
 
     // Step 3: Implement Agent
+    // Long timeout, more retries (most likely to need retry)
     {
       id: "implement",
       type: "genericNode",
@@ -166,6 +201,22 @@ Follow the plan step by step. After making changes, report what was done.`,
               isRequired: true,
               isAdvanced: false,
             },
+            timeout_ms: {
+              name: "timeout_ms",
+              displayName: "Timeout (ms)",
+              type: "number",
+              value: 300000, // 5 minutes
+              isRequired: false,
+              isAdvanced: true,
+            },
+            max_retries: {
+              name: "max_retries",
+              displayName: "Max Retries",
+              type: "number",
+              value: 3, // 3 retries for implementation
+              isRequired: false,
+              isAdvanced: true,
+            },
           },
           outputs: [{ name: "response", displayName: "Implementation Report", method: "output", types: ["string"] }],
         },
@@ -173,6 +224,7 @@ Follow the plan step by step. After making changes, report what was done.`,
     },
 
     // Step 4: Review Agent
+    // Short timeout, few retries (read-only)
     {
       id: "review",
       type: "genericNode",
@@ -213,6 +265,22 @@ Provide your review with specific feedback.`,
               value: "review-agent",
               isRequired: true,
               isAdvanced: false,
+            },
+            timeout_ms: {
+              name: "timeout_ms",
+              displayName: "Timeout (ms)",
+              type: "number",
+              value: 120000, // 2 minutes
+              isRequired: false,
+              isAdvanced: true,
+            },
+            max_retries: {
+              name: "max_retries",
+              displayName: "Max Retries",
+              type: "number",
+              value: 1, // 1 retry for review
+              isRequired: false,
+              isAdvanced: true,
             },
           },
           outputs: [{ name: "response", displayName: "Review Results", method: "output", types: ["string"] }],
@@ -309,7 +377,12 @@ Provide your review with specific feedback.`,
         type: "str",
       }),
       data: {
-        sourceHandle: { dataType: "string", id: "implement-output-response", name: "response", outputTypes: ["string"] },
+        sourceHandle: {
+          dataType: "string",
+          id: "implement-output-response",
+          name: "response",
+          outputTypes: ["string"],
+        },
         targetHandle: { fieldName: "prompt", id: "review-input-prompt", inputTypes: ["string"], type: "str" },
       },
     },

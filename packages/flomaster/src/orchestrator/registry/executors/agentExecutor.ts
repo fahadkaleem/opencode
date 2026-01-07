@@ -29,6 +29,33 @@ import type { ExecutorContext, ExecutorDependencies, ExecutorOptions, StepExecut
 
 const log = Log.create({ service: "AgentExecutor" })
 
+/** Default timeout in milliseconds (5 minutes) */
+const DEFAULT_TIMEOUT_MS = 300000
+
+/**
+ * Combines multiple AbortSignals into one.
+ * The combined signal aborts when ANY of the input signals abort.
+ */
+function combineAbortSignals(...signals: AbortSignal[]): AbortSignal {
+  const controller = new AbortController()
+
+  for (const signal of signals) {
+    if (signal.aborted) {
+      controller.abort(signal.reason)
+      return controller.signal
+    }
+    signal.addEventListener(
+      "abort",
+      () => {
+        controller.abort(signal.reason)
+      },
+      { once: true },
+    )
+  }
+
+  return controller.signal
+}
+
 /**
  * Error thrown when agent execution fails.
  */
@@ -106,6 +133,63 @@ function extractToolCallsFromParts(
 }
 
 /**
+ * Extracts file artifacts from completed tool calls.
+ * Looks for edit, write, and patch tools that modified files.
+ * @internal Exported for testing
+ */
+export function extractArtifactsFromToolCalls(
+  toolCalls: Array<{ name: string; args: unknown; result: unknown }>,
+): string[] {
+  const artifacts: string[] = []
+
+  for (const tc of toolCalls) {
+    // Extract file paths from edit/write tools
+    if (tc.name === "edit" || tc.name === "write") {
+      const args = tc.args as { file_path?: string; filePath?: string } | undefined
+      const filePath = args?.file_path ?? args?.filePath
+      if (filePath && !artifacts.includes(filePath)) {
+        artifacts.push(filePath)
+      }
+    }
+
+    // Extract from patch tool results (file modifications)
+    if (tc.name === "patch" && tc.result) {
+      const result = tc.result as { path?: string; file?: string } | undefined
+      const filePath = result?.path ?? result?.file
+      if (filePath && !artifacts.includes(filePath)) {
+        artifacts.push(filePath)
+      }
+    }
+  }
+
+  return artifacts
+}
+
+/**
+ * Generates a summary from the response and artifacts.
+ * Truncates long responses and adds artifact count.
+ * @internal Exported for testing
+ */
+export function generateSummary(response: string, artifacts: string[]): string {
+  const MAX_SUMMARY_LENGTH = 200
+
+  // Truncate response for summary
+  let summary = response.trim()
+  if (summary.length > MAX_SUMMARY_LENGTH) {
+    summary = summary.substring(0, MAX_SUMMARY_LENGTH).trim() + "..."
+  }
+
+  // Add artifact info if present
+  if (artifacts.length > 0) {
+    const artifactInfo =
+      artifacts.length === 1 ? `Modified 1 file: ${artifacts[0]}` : `Modified ${artifacts.length} files`
+    summary = artifactInfo + (summary ? `. ${summary}` : "")
+  }
+
+  return summary || "Step completed"
+}
+
+/**
  * Create an agent step executor that uses Session/SessionPrompt directly.
  *
  * @param directory - Working directory for session context
@@ -145,12 +229,28 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
         throw new AgentExecutionError(`Invalid config type for agent step: ${config.type}`, step.id)
       }
 
+      // Get timeout from step config, fall back to options, then default
+      const timeoutMs = config.config.timeoutMs ?? options?.timeout ?? DEFAULT_TIMEOUT_MS
+      log.info("Timeout configured", { stepId: step.id, timeoutMs })
+
+      // Create abort controller for timeout
+      const timeoutController = new AbortController()
+      const timeoutId = setTimeout(() => {
+        timeoutController.abort(new Error(`Step timed out after ${timeoutMs}ms`))
+      }, timeoutMs)
+
+      // Combine with external signal if provided
+      const combinedSignal = options?.signal
+        ? combineAbortSignals(options.signal, timeoutController.signal)
+        : timeoutController.signal
+
       // Get agent type from config, default to "build"
       const agentType = config.config.agentType ?? "build"
 
       // Look up the agent (built-in or custom from .opencode/agents/)
       const agent = await Agent.get(agentType)
       if (!agent) {
+        clearTimeout(timeoutId)
         throw new AgentExecutionError(
           `Unknown agent type: "${agentType}". ` +
             `Define it in .opencode/agents/${agentType}.md or use a built-in agent (build, plan, explore, general).`,
@@ -161,12 +261,15 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
 
       // Dry-run mode - validate agent exists even in dry-run
       if (context.dryRun) {
+        clearTimeout(timeoutId)
         log.info("Dry-run mode: returning mock response", { stepId: step.id })
         return {
           stepId: step.id,
           outputs: {
-            response: `[DRY-RUN] Agent ${step.displayName} (${agent.name}) would execute`,
             success: true,
+            summary: `[DRY-RUN] Would execute ${step.displayName} with agent "${agent.name}"`,
+            artifacts: [],
+            response: `[DRY-RUN] Agent ${step.displayName} (${agent.name}) would execute`,
           },
           complete: true,
         }
@@ -214,18 +317,14 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
       // This allows the state manager to record the mapping before execution starts
       options?.onEvent?.({ type: "session_created", sessionId: session.id, agentName: agent.name })
 
-      // Set up signal handling (following task.ts pattern)
-      // Signal comes from options (ExecutorOptions.signal), NOT context
+      // Set up signal handling with combined signal (timeout + external)
       function cancel() {
         SessionPrompt.cancel(session.id)
       }
-      if (options?.signal) {
-        options.signal.addEventListener("abort", cancel)
-      }
+      combinedSignal.addEventListener("abort", cancel, { once: true })
       using _ = defer(() => {
-        if (options?.signal) {
-          options.signal.removeEventListener("abort", cancel)
-        }
+        combinedSignal.removeEventListener("abort", cancel)
+        clearTimeout(timeoutId)
       })
 
       try {
@@ -237,7 +336,7 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
 
         // Determine model (step config > agent config > undefined for default)
         // Model is string format "provider/model" - parse with Provider.parseModel()
-        let model = agent.model
+        let model: { modelID: string; providerID: string } | undefined = agent.model
         if (config.config.model !== undefined) {
           const parsed = Provider.parseModel(config.config.model)
           if (!parsed.providerID || !parsed.modelID) {
@@ -246,7 +345,7 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
               step.id,
             )
           }
-          model = parsed
+          model = { modelID: parsed.modelID, providerID: parsed.providerID }
         }
 
         // Call SessionPrompt.prompt with agent (following task.ts pattern)
@@ -282,21 +381,31 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
           }>,
         )
 
+        // Extract artifacts from tool calls
+        const artifacts = extractArtifactsFromToolCalls(toolCalls)
+
+        // Generate summary
+        const summary = generateSummary(response, artifacts)
+
         log.info("Execution completed", {
           stepId: step.id,
           sessionId: session.id,
           responseLength: response.length,
           toolCallCount: toolCalls.length,
+          artifactCount: artifacts.length,
         })
 
-        // Return outputs INCLUDING sessionID (DON'T delete session!)
+        // Return consistent StepOutput structure INCLUDING sessionID (DON'T delete session!)
         return {
           stepId: step.id,
           sessionID: session.id, // KEY: Return sessionID for UI access
           outputs: {
-            response,
-            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
             success: true,
+            summary,
+            artifacts,
+            response,
+            // Keep toolCalls for debugging/advanced use
+            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
           },
           complete: true,
         }
@@ -309,6 +418,15 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
           sessionId: session.id,
           error: error instanceof Error ? error.message : String(error),
         })
+
+        // Check if it was a timeout
+        if (timeoutController.signal.aborted) {
+          throw new AgentExecutionError(
+            `Step "${step.displayName}" timed out after ${timeoutMs}ms`,
+            step.id,
+            error instanceof Error ? error : undefined,
+          )
+        }
 
         // On error, we still keep the session for debugging purposes
         // User can see what happened and potentially retry
@@ -346,8 +464,10 @@ export const placeholderAgentExecutor: StepExecutor<"Agent"> = {
     return Promise.resolve({
       stepId: step.id,
       outputs: {
-        response: `Agent ${step.displayName} executed (no directory configured)`,
         success: true,
+        summary: `Agent ${step.displayName} executed (no directory configured)`,
+        artifacts: [],
+        response: `Agent ${step.displayName} executed (no directory configured)`,
         _placeholder: true,
       },
       complete: true,

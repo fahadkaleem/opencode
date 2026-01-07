@@ -26,6 +26,9 @@ export * from "./engine/factory.js"
 export * from "./engine/validationRunner.js"
 export * from "./engine/workflowEngine.js"
 
+// Loader
+export * from "./loader/index.js"
+
 // Machine
 export * from "./machine/actions.js"
 export * from "./machine/guards.js"
@@ -39,6 +42,9 @@ export * from "./parser/workflowParser.js"
 
 // Registry
 export * from "./registry/index.js"
+
+// Schema
+export * from "./schema/index.js"
 
 // Types
 export * from "./types.js"

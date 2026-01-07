@@ -1,0 +1,19 @@
+{
+  "name": "test",
+  "description": "Simple test workflow for verification",
+
+  "steps": [
+    {
+      "id": "input-1",
+      "type": "input",
+      "name": "User Input"
+    },
+    {
+      "id": "agent-1",
+      "type": "agent",
+      "name": "AI Agent",
+      "depends_on": ["input-1"],
+      "prompt": "{{input-1.prompt}}"
+    }
+  ]
+}

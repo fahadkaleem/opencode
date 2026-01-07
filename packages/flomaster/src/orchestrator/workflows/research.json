@@ -1,0 +1,25 @@
+{
+  "name": "research",
+  "description": "Deep codebase research workflow",
+
+  "defaults": {
+    "timeout_ms": 300000,
+    "max_retries": 2
+  },
+
+  "steps": [
+    {
+      "id": "input-1",
+      "type": "input",
+      "name": "Research Query"
+    },
+    {
+      "id": "research-1",
+      "type": "agent",
+      "name": "Research Agent",
+      "depends_on": ["input-1"],
+      "agent": "research-agent",
+      "prompt": "{{input-1.prompt}}"
+    }
+  ]
+}

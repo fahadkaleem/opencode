@@ -7,22 +7,17 @@ import { Instance } from "opencode/project/instance"
 import { SessionPrompt } from "opencode/session/prompt"
 import { Identifier } from "opencode/id/id"
 import { createWorkflowEngine } from "../orchestrator/engine/factory.js"
-import { testWorkflow } from "../orchestrator/workflows/test-workflow.js"
-import { researchWorkflow } from "../orchestrator/workflows/research-workflow.js"
-import { sdlcWorkflow } from "../orchestrator/workflows/sdlc-workflow.js"
 import type { WorkflowData, WorkflowEvent } from "../orchestrator/types.js"
-import { createStateManager, type StateManager } from "../state/stateManager.js"
+import { createStateManager } from "../state/stateManager.js"
 import { ExecutionStatus, StepExecutionStatus } from "../state/types.js"
 import { FLOMASTER_DIR, EXECUTIONS_DIR } from "../state/defaults.js"
-
-/**
- * Available workflows
- */
-const workflows: Record<string, { workflow: WorkflowData; inputNodeId: string; outputNodeId: string }> = {
-  test: { workflow: testWorkflow, inputNodeId: "input-1", outputNodeId: "agent-1" },
-  research: { workflow: researchWorkflow, inputNodeId: "input-1", outputNodeId: "research-1" },
-  sdlc: { workflow: sdlcWorkflow, inputNodeId: "input", outputNodeId: "review" },
-}
+import {
+  loadWorkflow,
+  discoverWorkflows,
+  ensureWorkflowsInitialized,
+  WorkflowLoadError,
+  type LoadedWorkflow,
+} from "../orchestrator/loader/index.js"
 
 /**
  * Create a workflow with the input node's prompt value set.
@@ -32,6 +27,8 @@ function createWorkflowWithInput(workflow: WorkflowData, inputNodeId: string, pr
     ...workflow,
     nodes: workflow.nodes.map((node) => {
       if (node.id !== inputNodeId) return node
+
+      const existingPrompt = node.data.node.template["prompt"]
       return {
         ...node,
         data: {
@@ -40,10 +37,19 @@ function createWorkflowWithInput(workflow: WorkflowData, inputNodeId: string, pr
             ...node.data.node,
             template: {
               ...node.data.node.template,
-              prompt: {
-                ...node.data.node.template["prompt"],
-                value: promptValue,
-              },
+              prompt: existingPrompt
+                ? {
+                    ...existingPrompt,
+                    value: promptValue,
+                  }
+                : {
+                    name: "prompt",
+                    displayName: "Prompt",
+                    type: "str",
+                    value: promptValue,
+                    isRequired: true,
+                    isAdvanced: false,
+                  },
             },
           },
         },
@@ -56,21 +62,21 @@ function createWorkflowWithInput(workflow: WorkflowData, inputNodeId: string, pr
  * Workflow run subcommand
  */
 const WorkflowRunCommand = cmd({
-  command: "run [message..]",
+  command: "run",
   describe: "Run a workflow",
   builder: (yargs: Argv) => {
     return yargs
-      .positional("message", {
-        describe: "Initial prompt for the workflow",
+      .option("name", {
+        alias: "n",
+        describe: "Workflow name to run (see 'flomaster workflow list -W' for available)",
         type: "string",
-        array: true,
-        default: [],
+        demandOption: true,
       })
-      .option("workflow", {
-        alias: "w",
-        describe: `Workflow to run (${Object.keys(workflows).join(", ")})`,
+      .option("prompt", {
+        alias: "p",
+        describe: "Task prompt/description for the workflow",
         type: "string",
-        default: "test",
+        demandOption: true,
       })
       .option("dry-run", {
         describe: "Validate workflow without executing",
@@ -79,28 +85,60 @@ const WorkflowRunCommand = cmd({
       })
   },
   handler: async (args) => {
-    const message =
-      args.message.length > 0 ? args.message.join(" ") : "Hello! This is a test of the FloMaster workflow orchestrator."
-
-    const workflowName = args.workflow as string
-    const workflowConfig = workflows[workflowName]
-    if (!workflowConfig) {
-      UI.error(`Unknown workflow: ${workflowName}. Available: ${Object.keys(workflows).join(", ")}`)
-      process.exit(1)
-    }
+    const workflowName = args.name as string
+    const message = args.prompt as string
 
     await bootstrap(process.cwd(), async () => {
+      const projectDir = Instance.worktree
+
+      // Auto-install built-in workflows on first run
+      ensureWorkflowsInitialized(projectDir)
+
+      // Load workflow from file
+      let workflowConfig: LoadedWorkflow
+      try {
+        workflowConfig = loadWorkflow(projectDir, workflowName)
+      } catch (error) {
+        if (error instanceof WorkflowLoadError) {
+          UI.error(error.message)
+          // List available workflows
+          const available = discoverWorkflows(projectDir)
+          if (available.length > 0) {
+            UI.println(UI.Style.TEXT_DIM + `Available workflows: ${available.map((w) => w.name).join(", ")}`)
+          } else {
+            UI.println(UI.Style.TEXT_DIM + `No workflows found in ${projectDir}/.flomaster/workflows/`)
+          }
+          process.exit(1)
+        }
+        throw error
+      }
+
       UI.println()
-      UI.println(UI.Style.TEXT_INFO_BOLD + "* " + UI.Style.TEXT_NORMAL + `Starting workflow: ${workflowName}...`)
+      UI.println(UI.Style.TEXT_INFO_BOLD + "* " + UI.Style.TEXT_NORMAL + `Running workflow: ${workflowConfig.name}`)
+      UI.println(UI.Style.TEXT_DIM + `Description: ${workflowConfig.description}`)
+
+      if (args.dryRun) {
+        UI.println()
+        UI.println(UI.Style.TEXT_SUCCESS_BOLD + "Dry run complete - workflow is valid" + UI.Style.TEXT_NORMAL)
+        UI.println(`  Steps: ${workflowConfig.workflow.nodes.length}`)
+        UI.println(`  Entry: ${workflowConfig.inputNodeId}`)
+        UI.println(`  Exit:  ${workflowConfig.outputNodeId}`)
+        UI.println()
+        return
+      }
+
       UI.println()
 
       const { engine, stateManager } = await createWorkflowEngine({
-        directory: Instance.worktree,
+        directory: projectDir,
         enableStateManager: true,
       })
 
       // Track step completion times for recording
       const stepStartTimes = new Map<string, number>()
+
+      // Generate execution ID
+      const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
 
       // Subscribe to workflow events
       const subscription = engine.subscribe((event: WorkflowEvent) => {
@@ -138,7 +176,7 @@ const WorkflowRunCommand = cmd({
                 event.stepId,
             )
             // Record step result immediately for crash recovery
-            if (stateManager && !args.dryRun) {
+            if (stateManager) {
               const startTime = stepStartTimes.get(event.stepId) ?? Date.now()
               stateManager
                 .recordStepResult(executionId, event.stepId, {
@@ -155,8 +193,7 @@ const WorkflowRunCommand = cmd({
 
           case "STEP_SESSION_CREATED":
             // Record session mapping immediately for crash recovery
-            // This allows resume to find and continue the session
-            if (stateManager && !args.dryRun) {
+            if (stateManager) {
               stateManager.mapStepToSession(executionId, event.stepId, event.sessionID).catch(() => {
                 // Ignore errors - non-critical for workflow execution
               })
@@ -185,11 +222,8 @@ const WorkflowRunCommand = cmd({
         }
       })
 
-      // Generate execution ID
-      const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`
-
-      // Create execution record if state manager is available and not dry-run
-      if (stateManager && !args.dryRun) {
+      // Create execution record if state manager is available
+      if (stateManager) {
         await stateManager.createExecution(executionId, workflowName)
         // Store input prompt for resume capability
         await stateManager.mergeStepOutputs(executionId, workflowConfig.inputNodeId, {
@@ -204,7 +238,7 @@ const WorkflowRunCommand = cmd({
         // Execute the workflow
         const result = await engine.executeWorkflow(workflowWithInput, `${workflowName}-workflow-run`, {
           executionId,
-          dryRun: args.dryRun,
+          dryRun: false,
           variables: { prompt: message },
         })
 
@@ -212,8 +246,7 @@ const WorkflowRunCommand = cmd({
 
         if (result.terminateMode === "COMPLETED") {
           // Record final state
-          if (stateManager && !args.dryRun) {
-            // Record step results
+          if (stateManager) {
             for (const stepResult of result.stepResults) {
               await stateManager.recordStepResult(executionId, stepResult.stepId, {
                 status: StepExecutionStatus.COMPLETED,
@@ -245,12 +278,12 @@ const WorkflowRunCommand = cmd({
           }
 
           // Show execution ID for state inspection
-          if (stateManager && !args.dryRun) {
+          if (stateManager) {
             UI.println(UI.Style.TEXT_DIM + `Execution ID: ${executionId}`)
           }
         } else if (result.terminateMode === "FAILED") {
           // Record failed state
-          if (stateManager && !args.dryRun) {
+          if (stateManager) {
             await stateManager.updateExecutionStatus(executionId, ExecutionStatus.FAILED)
           }
           UI.error(`Workflow failed: ${result.error}`)
@@ -258,7 +291,7 @@ const WorkflowRunCommand = cmd({
         }
       } catch (error) {
         // Record failed state on exception
-        if (stateManager && !args.dryRun) {
+        if (stateManager) {
           await stateManager.updateExecutionStatus(executionId, ExecutionStatus.FAILED)
         }
         throw error
@@ -310,12 +343,18 @@ function getStatusStyle(status: ExecutionStatus): string {
  */
 const WorkflowListCommand = cmd({
   command: "list",
-  describe: "List workflow executions",
+  describe: "List workflow executions or available workflow definitions",
   builder: (yargs: Argv) => {
     return yargs
+      .option("workflows", {
+        alias: "W",
+        describe: "Show available workflow definitions instead of executions",
+        type: "boolean",
+        default: false,
+      })
       .option("status", {
         alias: "s",
-        describe: "Filter by status (completed, failed, running, created, paused, cancelled)",
+        describe: "Filter executions by status (completed, failed, running, created, paused, cancelled)",
         type: "string",
       })
       .option("limit", {
@@ -327,6 +366,46 @@ const WorkflowListCommand = cmd({
   },
   handler: async (args) => {
     await bootstrap(process.cwd(), async () => {
+      const projectDir = Instance.worktree
+
+      // Auto-install built-in workflows on first run
+      ensureWorkflowsInitialized(projectDir)
+
+      if (args.workflows) {
+        // Show available workflow definitions
+        const workflows = discoverWorkflows(projectDir)
+        if (workflows.length === 0) {
+          UI.println(UI.Style.TEXT_DIM + "No workflows found in .flomaster/workflows/")
+          UI.println(UI.Style.TEXT_DIM + "Create a workflow JSON file to get started.")
+          return
+        }
+
+        UI.println()
+        UI.println(UI.Style.TEXT_INFO_BOLD + "Available Workflows" + UI.Style.TEXT_NORMAL)
+        UI.println()
+
+        // Table header
+        UI.println(UI.Style.TEXT_DIM + "NAME".padEnd(20) + "STEPS".padEnd(8) + "DESCRIPTION" + UI.Style.TEXT_NORMAL)
+        UI.println(UI.Style.TEXT_DIM + "-".repeat(70) + UI.Style.TEXT_NORMAL)
+
+        for (const w of workflows) {
+          UI.println(
+            UI.Style.TEXT_HIGHLIGHT_BOLD +
+              w.name.padEnd(20) +
+              UI.Style.TEXT_NORMAL +
+              String(w.stepCount).padEnd(8) +
+              UI.Style.TEXT_DIM +
+              w.description.substring(0, 40) +
+              UI.Style.TEXT_NORMAL,
+          )
+        }
+
+        UI.println()
+        UI.println(UI.Style.TEXT_DIM + `Showing ${workflows.length} workflow(s)` + UI.Style.TEXT_NORMAL)
+        return
+      }
+
+      // Show workflow executions
       const stateManager = await getStateManager()
 
       // Build filter
@@ -472,6 +551,100 @@ const WorkflowInspectCommand = cmd({
 })
 
 /**
+ * Workflow validate subcommand
+ */
+const WorkflowValidateCommand = cmd({
+  command: "validate <name>",
+  describe: "Validate a workflow file",
+  builder: (yargs: Argv) => {
+    return yargs.positional("name", {
+      describe: "Workflow name to validate",
+      type: "string",
+      demandOption: true,
+    })
+  },
+  handler: async (args) => {
+    const workflowName = args.name as string
+
+    await bootstrap(process.cwd(), async () => {
+      const projectDir = Instance.worktree
+
+      // Auto-install built-in workflows on first run
+      ensureWorkflowsInitialized(projectDir)
+
+      try {
+        const workflow = loadWorkflow(projectDir, workflowName)
+        UI.println()
+        UI.println(UI.Style.TEXT_SUCCESS_BOLD + `Workflow '${workflow.name}' is valid` + UI.Style.TEXT_NORMAL)
+        UI.println(`  Steps: ${workflow.workflow.nodes.length}`)
+        UI.println(`  Entry: ${workflow.inputNodeId}`)
+        UI.println(`  Exit:  ${workflow.outputNodeId}`)
+        UI.println()
+      } catch (error) {
+        if (error instanceof WorkflowLoadError) {
+          UI.error(`Validation failed: ${error.message}`)
+          process.exit(1)
+        }
+        throw error
+      }
+    })
+  },
+})
+
+/**
+ * Workflow show subcommand
+ */
+const WorkflowShowCommand = cmd({
+  command: "show <name>",
+  describe: "Show workflow definition details",
+  builder: (yargs: Argv) => {
+    return yargs.positional("name", {
+      describe: "Workflow name to show",
+      type: "string",
+      demandOption: true,
+    })
+  },
+  handler: async (args) => {
+    const workflowName = args.name as string
+
+    await bootstrap(process.cwd(), async () => {
+      const projectDir = Instance.worktree
+
+      // Auto-install built-in workflows on first run
+      ensureWorkflowsInitialized(projectDir)
+
+      try {
+        const workflow = loadWorkflow(projectDir, workflowName)
+
+        UI.println()
+        UI.println(UI.Style.TEXT_INFO_BOLD + `Workflow: ${workflow.name}` + UI.Style.TEXT_NORMAL)
+        UI.println(UI.Style.TEXT_DIM + `Description: ${workflow.description}`)
+        UI.println(UI.Style.TEXT_DIM + `File: ${workflow.filePath}`)
+        UI.println()
+        UI.println(UI.Style.TEXT_INFO_BOLD + `Steps (${workflow.workflow.nodes.length}):` + UI.Style.TEXT_NORMAL)
+
+        for (const node of workflow.workflow.nodes) {
+          const name = node.data.node.displayName
+          const type = node.data.node.baseClasses[0] || "Unknown"
+          UI.println(`  - ${UI.Style.TEXT_HIGHLIGHT_BOLD}${node.id}${UI.Style.TEXT_NORMAL}: ${name} (${type})`)
+        }
+
+        UI.println()
+        UI.println(`Entry point: ${UI.Style.TEXT_HIGHLIGHT_BOLD}${workflow.inputNodeId}${UI.Style.TEXT_NORMAL}`)
+        UI.println(`Exit point:  ${UI.Style.TEXT_HIGHLIGHT_BOLD}${workflow.outputNodeId}${UI.Style.TEXT_NORMAL}`)
+        UI.println()
+      } catch (error) {
+        if (error instanceof WorkflowLoadError) {
+          UI.error(error.message)
+          process.exit(1)
+        }
+        throw error
+      }
+    })
+  },
+})
+
+/**
  * Helper to extract text response from message parts
  */
 function extractTextFromParts(parts: Array<{ type: string; text?: string }>): string {
@@ -483,11 +656,6 @@ function extractTextFromParts(parts: Array<{ type: string; text?: string }>): st
 
 /**
  * Workflow resume subcommand
- *
- * Resume strategy:
- * 1. Find step that has a session but isn't completed (the interrupted step)
- * 2. Send "Continue" to that session to finish it (preserves context)
- * 3. Record the result and continue with remaining steps
  */
 const WorkflowResumeCommand = cmd({
   command: "resume <executionId>",
@@ -507,10 +675,14 @@ const WorkflowResumeCommand = cmd({
   },
   handler: async (args) => {
     await bootstrap(process.cwd(), async () => {
+      const projectDir = Instance.worktree
       const stateManager = await getStateManager()
       const executionId = args.executionId as string
 
-      // 1. Load execution state (don't require checkpoint)
+      // Auto-install built-in workflows on first run
+      ensureWorkflowsInitialized(projectDir)
+
+      // 1. Load execution state
       const execution = await stateManager.getExecution(executionId)
       if (!execution) {
         UI.error(`Execution not found: ${executionId}`)
@@ -526,11 +698,20 @@ const WorkflowResumeCommand = cmd({
         process.exit(0)
       }
 
-      // 3. Resolve workflow definition
-      const workflowConfig = workflows[execution.workflowName]
-      if (!workflowConfig) {
-        UI.error(`Workflow not found: ${execution.workflowName}. Available: ${Object.keys(workflows).join(", ")}`)
-        process.exit(1)
+      // 3. Resolve workflow definition from file
+      let workflowConfig: LoadedWorkflow
+      try {
+        workflowConfig = loadWorkflow(projectDir, execution.workflowName)
+      } catch (error) {
+        if (error instanceof WorkflowLoadError) {
+          UI.error(`Failed to load workflow: ${error.message}`)
+          const available = discoverWorkflows(projectDir)
+          if (available.length > 0) {
+            UI.println(UI.Style.TEXT_DIM + `Available workflows: ${available.map((w) => w.name).join(", ")}`)
+          }
+          process.exit(1)
+        }
+        throw error
       }
 
       // 4. Load context (step outputs)
@@ -567,14 +748,14 @@ const WorkflowResumeCommand = cmd({
 
       if (completedStepIds.length > 0) {
         UI.println(
-          UI.Style.TEXT_SUCCESS_BOLD + "✓ Completed steps: " + UI.Style.TEXT_NORMAL + completedStepIds.join(", "),
+          UI.Style.TEXT_SUCCESS_BOLD + "Completed steps: " + UI.Style.TEXT_NORMAL + completedStepIds.join(", "),
         )
       }
 
       if (interruptedStepId && interruptedSessionId) {
         UI.println(
           UI.Style.TEXT_WARNING_BOLD +
-            "⟳ Interrupted step: " +
+            "Interrupted step: " +
             UI.Style.TEXT_NORMAL +
             interruptedStepId +
             UI.Style.TEXT_DIM +
@@ -584,7 +765,7 @@ const WorkflowResumeCommand = cmd({
 
       const remainingSteps = pendingStepIds.filter((id) => id !== interruptedStepId)
       if (remainingSteps.length > 0) {
-        UI.println(UI.Style.TEXT_INFO_BOLD + "→ Remaining steps: " + UI.Style.TEXT_NORMAL + remainingSteps.join(", "))
+        UI.println(UI.Style.TEXT_INFO_BOLD + "Remaining steps: " + UI.Style.TEXT_NORMAL + remainingSteps.join(", "))
       }
       UI.println()
 
@@ -685,7 +866,7 @@ const WorkflowResumeCommand = cmd({
       UI.println(UI.Style.TEXT_INFO_BOLD + "| " + UI.Style.TEXT_NORMAL + "Running remaining steps...")
 
       const { engine, stateManager: engineStateManager } = await createWorkflowEngine({
-        directory: Instance.worktree,
+        directory: projectDir,
         enableStateManager: true,
       })
 
@@ -811,6 +992,8 @@ export const WorkflowCommand = cmd({
       .command(WorkflowListCommand)
       .command(WorkflowInspectCommand)
       .command(WorkflowResumeCommand)
+      .command(WorkflowValidateCommand)
+      .command(WorkflowShowCommand)
       .demandCommand(1, "You must specify a subcommand (e.g., 'run', 'list', 'inspect')")
   },
   handler: () => {

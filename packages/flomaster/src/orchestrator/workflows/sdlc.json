@@ -1,0 +1,58 @@
+{
+  "name": "sdlc",
+  "description": "Full software development lifecycle: research, plan, implement, review",
+
+  "defaults": {
+    "agent": "build",
+    "timeout_ms": 300000,
+    "max_retries": 3
+  },
+
+  "steps": [
+    {
+      "id": "input",
+      "type": "input",
+      "name": "Task Input"
+    },
+    {
+      "id": "research",
+      "type": "agent",
+      "name": "Research",
+      "depends_on": ["input"],
+      "agent": "research-agent",
+      "prompt": "You are researching for this task: {{input.prompt}}\n\nAnalyze the codebase to understand:\n1. What files and components are relevant\n2. What patterns and conventions are used\n3. What dependencies or constraints exist\n\nProvide a structured summary of your findings.",
+      "timeout_ms": 180000,
+      "max_retries": 1
+    },
+    {
+      "id": "plan",
+      "type": "agent",
+      "name": "Plan",
+      "depends_on": ["research"],
+      "agent": "plan-agent",
+      "prompt": "Based on this research:\n\n{{research.response}}\n\nCreate a detailed implementation plan for: {{input.prompt}}\n\nInclude:\n1. Specific files to create or modify\n2. Step-by-step implementation order\n3. Key considerations and edge cases\n4. Success criteria",
+      "timeout_ms": 120000,
+      "max_retries": 2
+    },
+    {
+      "id": "implement",
+      "type": "agent",
+      "name": "Implement",
+      "depends_on": ["plan"],
+      "agent": "implement-agent",
+      "prompt": "Execute this implementation plan:\n\n{{plan.response}}\n\nOriginal task: {{input.prompt}}\n\nFollow the plan step by step. After making changes, report what was done.",
+      "timeout_ms": 300000,
+      "max_retries": 3
+    },
+    {
+      "id": "review",
+      "type": "agent",
+      "name": "Review",
+      "depends_on": ["implement"],
+      "agent": "review-agent",
+      "prompt": "Review the implementation for: {{input.prompt}}\n\nImplementation report:\n{{implement.response}}\n\nOriginal plan:\n{{plan.response}}\n\nCheck for:\n1. Correctness - does it meet the requirements?\n2. Code quality - follows conventions?\n3. Potential issues - bugs, security, performance?\n4. Missing items - anything from the plan not implemented?\n\nProvide your review with specific feedback.",
+      "timeout_ms": 120000,
+      "max_retries": 1
+    }
+  ]
+}

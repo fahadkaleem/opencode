@@ -1,25 +1,43 @@
 /**
- * SDLC Workflow Tests (TASK-10)
+ * SDLC Workflow Tests (TASK-10 / TASK-11)
  *
- * Tests to verify the SDLC workflow is correctly configured with new step config fields.
+ * Tests to verify the SDLC workflow (now loaded from JSON) is correctly configured
+ * with step config fields.
  */
 
 import { describe, expect, it } from "bun:test"
-import { sdlcWorkflow } from "./sdlc-workflow.js"
+import { join, dirname } from "node:path"
+import { fileURLToPath } from "node:url"
+import { loadWorkflowFromFile } from "../loader/workflowLoader.js"
 import { parseWorkflow } from "../parser/workflowParser.js"
 import type { AgentConfig } from "../types.js"
 
-describe("SDLC Workflow with Step Configuration (TASK-10)", () => {
-  it("should parse SDLC workflow successfully", () => {
-    const parsed = parseWorkflow(sdlcWorkflow)
+const __dirname = dirname(fileURLToPath(import.meta.url))
+
+describe("SDLC Workflow (JSON) with Step Configuration", () => {
+  it("should load and parse correctly from JSON", () => {
+    const loaded = loadWorkflowFromFile(join(__dirname, "sdlc.json"))
+
+    expect(loaded.name).toBe("sdlc")
+    expect(loaded.workflow.nodes).toHaveLength(5)
+    expect(loaded.inputNodeId).toBe("input")
+    expect(loaded.outputNodeId).toBe("review")
+  })
+
+  it("should parse workflow successfully", () => {
+    const loaded = loadWorkflowFromFile(join(__dirname, "sdlc.json"))
+    const parsed = parseWorkflow(loaded.workflow)
+
     expect(parsed.nodes.size).toBe(5) // input + research + plan + implement + review
     expect(parsed.entryPoints).toContain("input")
     expect(parsed.exitPoints).toContain("review")
   })
 
   it("should have research step with correct timeout and retries", () => {
-    const parsed = parseWorkflow(sdlcWorkflow)
+    const loaded = loadWorkflowFromFile(join(__dirname, "sdlc.json"))
+    const parsed = parseWorkflow(loaded.workflow)
     const researchStep = parsed.nodes.get("research")
+
     expect(researchStep).toBeDefined()
     expect(researchStep?.type).toBe("Agent")
 
@@ -32,8 +50,10 @@ describe("SDLC Workflow with Step Configuration (TASK-10)", () => {
   })
 
   it("should have plan step with correct timeout and retries", () => {
-    const parsed = parseWorkflow(sdlcWorkflow)
+    const loaded = loadWorkflowFromFile(join(__dirname, "sdlc.json"))
+    const parsed = parseWorkflow(loaded.workflow)
     const planStep = parsed.nodes.get("plan")
+
     expect(planStep).toBeDefined()
     expect(planStep?.type).toBe("Agent")
 
@@ -46,8 +66,10 @@ describe("SDLC Workflow with Step Configuration (TASK-10)", () => {
   })
 
   it("should have implement step with correct timeout and retries", () => {
-    const parsed = parseWorkflow(sdlcWorkflow)
+    const loaded = loadWorkflowFromFile(join(__dirname, "sdlc.json"))
+    const parsed = parseWorkflow(loaded.workflow)
     const implementStep = parsed.nodes.get("implement")
+
     expect(implementStep).toBeDefined()
     expect(implementStep?.type).toBe("Agent")
 
@@ -60,8 +82,10 @@ describe("SDLC Workflow with Step Configuration (TASK-10)", () => {
   })
 
   it("should have review step with correct timeout and retries", () => {
-    const parsed = parseWorkflow(sdlcWorkflow)
+    const loaded = loadWorkflowFromFile(join(__dirname, "sdlc.json"))
+    const parsed = parseWorkflow(loaded.workflow)
     const reviewStep = parsed.nodes.get("review")
+
     expect(reviewStep).toBeDefined()
     expect(reviewStep?.type).toBe("Agent")
 
@@ -74,7 +98,8 @@ describe("SDLC Workflow with Step Configuration (TASK-10)", () => {
   })
 
   it("should have correct execution order", () => {
-    const parsed = parseWorkflow(sdlcWorkflow)
+    const loaded = loadWorkflowFromFile(join(__dirname, "sdlc.json"))
+    const parsed = parseWorkflow(loaded.workflow)
     const order = parsed.executionOrder
 
     // input should come first
@@ -88,7 +113,8 @@ describe("SDLC Workflow with Step Configuration (TASK-10)", () => {
   })
 
   it("should have all expected edges", () => {
-    const parsed = parseWorkflow(sdlcWorkflow)
+    const loaded = loadWorkflowFromFile(join(__dirname, "sdlc.json"))
+    const parsed = parseWorkflow(loaded.workflow)
 
     // Check that edges exist (4 connections)
     expect(parsed.edges.size).toBe(4)
@@ -98,5 +124,27 @@ describe("SDLC Workflow with Step Configuration (TASK-10)", () => {
     expect(parsed.adjacency.get("research")).toContain("plan")
     expect(parsed.adjacency.get("plan")).toContain("implement")
     expect(parsed.adjacency.get("implement")).toContain("review")
+  })
+})
+
+describe("Test Workflow (JSON)", () => {
+  it("should load and parse correctly from JSON", () => {
+    const loaded = loadWorkflowFromFile(join(__dirname, "test.json"))
+
+    expect(loaded.name).toBe("test")
+    expect(loaded.workflow.nodes).toHaveLength(2)
+    expect(loaded.inputNodeId).toBe("input-1")
+    expect(loaded.outputNodeId).toBe("agent-1")
+  })
+})
+
+describe("Research Workflow (JSON)", () => {
+  it("should load and parse correctly from JSON", () => {
+    const loaded = loadWorkflowFromFile(join(__dirname, "research.json"))
+
+    expect(loaded.name).toBe("research")
+    expect(loaded.workflow.nodes).toHaveLength(2)
+    expect(loaded.inputNodeId).toBe("input-1")
+    expect(loaded.outputNodeId).toBe("research-1")
   })
 })

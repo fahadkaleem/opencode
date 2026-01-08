@@ -27,7 +27,15 @@ import {
   RGBA,
 } from "@opentui/core"
 import { Prompt, type PromptRef } from "@tui/component/prompt"
-import type { AssistantMessage, Part, ToolPart, UserMessage, TextPart, ReasoningPart } from "@opencode-ai/sdk/v2"
+import type {
+  AssistantMessage,
+  Part,
+  ToolPart,
+  UserMessage,
+  TextPart,
+  ReasoningPart,
+  ToolStateCompleted,
+} from "@opencode-ai/sdk/v2"
 import { useLocal } from "@tui/context/local"
 import { Locale } from "@/util/locale"
 import type { Tool } from "@/tool/tool"
@@ -1793,12 +1801,16 @@ function Workflow(props: ToolProps<any>) {
   // Find current running step for navigation
   const currentStep = createMemo(() => steps.find((s) => s.status === "RUNNING"))
 
-  // Get current tool activity from running step's session
+  // TODO(TASK-13): This won't work as-is because step session data isn't loaded into sync
+  // unless the user navigates to that session. To make this work, we need to either:
+  // 1. Subscribe to Bus events for step session updates (like Task tool does)
+  // 2. Or load step session data when workflow starts running
+  // For now, this will always return null until proper Bus subscription is implemented.
   const currentActivity = createMemo(() => {
     const runningStep = currentStep()
     if (!runningStep?.sessionId) return null
 
-    // Get messages for the step session
+    // Get messages for the step session (only available if session is loaded in sync)
     const messages = sync.data.message[runningStep.sessionId] ?? []
     const lastAssistant = messages.findLast((m) => m.role === "assistant")
     if (!lastAssistant) return null
@@ -1814,7 +1826,7 @@ function Workflow(props: ToolProps<any>) {
     return {
       tool: currentTool.tool,
       status: currentTool.state.status,
-      title: currentTool.state.status === "completed" ? (currentTool.state as any).title : undefined,
+      title: currentTool.state.status === "completed" ? (currentTool.state as ToolStateCompleted).title : undefined,
     }
   })
 

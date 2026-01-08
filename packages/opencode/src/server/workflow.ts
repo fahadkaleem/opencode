@@ -67,6 +67,13 @@ type ExecutionState = {
 }
 const activeExecutions = new Map<string, ExecutionState>()
 
+// TODO(TASK-13): These exported functions provide an API for external callers to update
+// execution state. Currently the POST /workflow/run handler uses internal helpers instead.
+// These will be used when we implement:
+// - /workflow/pause and /workflow/resume endpoints
+// - External step status updates from Bus events
+// - Workflow intervention features (R4)
+
 /**
  * Update execution state - called from workflow engine events
  */

@@ -162,10 +162,13 @@ export async function updateWorkflowMessage(
 
   const isComplete = status === "COMPLETED" || status === "FAILED" || status === "CANCELLED"
 
-  // Get workflow name from existing state
-  const workflowName = (existingPart.state as any).input?.workflowName ?? "workflow"
-  const executionId = (existingPart.state as any).input?.executionId ?? ""
-  const startTime = (existingPart.state as any).time?.start ?? now
+  // Extract values from existing state - all ToolState variants have 'input' as Record<string, any>
+  // and running/completed/error states have 'time.start'. Use type narrowing to access safely.
+  const existingState = existingPart.state
+  const workflowName =
+    "input" in existingState ? ((existingState.input.workflowName as string | undefined) ?? "workflow") : "workflow"
+  const executionId = "input" in existingState ? ((existingState.input.executionId as string | undefined) ?? "") : ""
+  const startTime = "time" in existingState && existingState.time ? existingState.time.start : now
 
   let updatedPart: MessageV2.ToolPart
 

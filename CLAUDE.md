@@ -151,17 +151,40 @@ packages/flomaster/
 
 ### State Storage
 
+**CRITICAL: `.flomaster/` MUST be at the project/repo root, NEVER inside packages.**
+
+- `Instance.worktree` returns the git repo root - use this for `.flomaster/` paths
+- NEVER use `process.cwd()` or relative paths for `.flomaster/` - it may resolve to `packages/flomaster/`
+- All execution state, logs, and workflows live at `{repo-root}/.flomaster/`
+
 Workflow execution state is stored at the **project root** in `.flomaster/`:
 
 ```
 {project}/.flomaster/
+├── workflows/                    # Workflow definitions (JSON)
 └── executions/
     └── {execution-id}/
-        ├── state.json       # Execution status, step statuses
-        ├── context.json     # Step outputs (for context passing)
-        ├── mapping.json     # Step-to-session mappings
-        └── checkpoint.json  # Full checkpoint for crash recovery
+        ├── execution.json        # Single consolidated file with all state
+        └── logs.txt              # Execution logs
 ```
+
+The `execution.json` format (v1.0):
+
+```json
+{
+  "id": "exec-1234567890-abc123",
+  "workflowName": "sdlc",
+  "createdAt": "2026-01-07T22:41:39.816Z",
+  "updatedAt": "2026-01-07T22:45:49.123Z",
+  "status": "COMPLETED",
+  "steps": {
+    "input": { "status": "COMPLETED", "outputs": { "prompt": "..." } },
+    "research": { "status": "COMPLETED", "sessionId": "ses_...", "outputs": { "response": "..." } },
+    "plan": { "status": "COMPLETED", "sessionId": "ses_...", "outputs": { "response": "..." } }
+  },
+  "version": "1.0",
+  "recoverable": true
+}
 
 ### Session Integration Model
 
@@ -324,6 +347,7 @@ Implementation tasks are tracked in `.alfred/tasks/`:
 | TASK-07 | Proper agent integration                                | ✅ Complete            |
 | TASK-08 | Default step agents (research, plan, implement, review) | ✅ Complete            |
 | TASK-09 | Self-contained flomaster module + state persistence     | ✅ Phases 1-2 Complete |
+| TASK-12 | Consolidate state to single execution.json              | ✅ Complete            |
 
 Read task files before implementing: `.alfred/tasks/TASK-XX/task.md`
 

@@ -37,14 +37,14 @@ export {
   isStepExecutionStatus,
   isTerminalStatus,
   isActiveStatus,
-  type WorkflowExecution,
-  type ExecutionCheckpoint,
+  EXECUTION_SCHEMA_VERSION,
+  type Execution,
+  type ExecutionStep,
   type ExecutionFilter,
   type ExecutionSummary,
   type IncompleteExecution,
   type SessionDetails,
   type SessionMessage,
-  type StateManagerConfig,
   // Note: SharedContext and StepResult are also exported from orchestrator
   // Use state/types.js directly if you need the state module's version
 } from "./state/types.js"
@@ -53,11 +53,8 @@ export {
   // Defaults
   FLOMASTER_DIR,
   EXECUTIONS_DIR,
-  STATE_FILENAME,
-  CONTEXT_FILENAME,
-  MAPPING_FILENAME,
-  CHECKPOINT_FILENAME,
-  CHECKPOINT_VERSION,
+  EXECUTION_FILENAME,
+  LOGS_FILENAME,
 } from "./state/defaults.js"
 
 // CLI commands

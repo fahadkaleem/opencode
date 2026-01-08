@@ -235,9 +235,11 @@ const WorkflowRunCommand = cmd({
         // Set the prompt input in the workflow
         const workflowWithInput = createWorkflowWithInput(workflowConfig.workflow, workflowConfig.inputNodeId, message)
 
-        // Execute the workflow
+        // Execute the workflow (pass executionsDir for log file location)
+        const executionsDir = path.join(projectDir, FLOMASTER_DIR, EXECUTIONS_DIR)
         const result = await engine.executeWorkflow(workflowWithInput, `${workflowName}-workflow-run`, {
           executionId,
+          executionsDir,
           dryRun: false,
           variables: { prompt: message },
         })
@@ -492,7 +494,7 @@ const WorkflowInspectCommand = cmd({
       UI.println()
 
       // Basic info
-      UI.println(UI.Style.TEXT_DIM + "Execution ID: " + UI.Style.TEXT_HIGHLIGHT_BOLD + execution.executionId)
+      UI.println(UI.Style.TEXT_DIM + "Execution ID: " + UI.Style.TEXT_HIGHLIGHT_BOLD + execution.id)
       UI.println(UI.Style.TEXT_DIM + "Workflow:     " + UI.Style.TEXT_NORMAL + execution.workflowName)
       UI.println(
         UI.Style.TEXT_DIM +
@@ -508,12 +510,12 @@ const WorkflowInspectCommand = cmd({
       UI.println(UI.Style.TEXT_INFO_BOLD + "Step Statuses" + UI.Style.TEXT_NORMAL)
       UI.println()
 
-      const stepIds = Object.keys(execution.stepStatuses)
+      const stepIds = Object.keys(execution.steps)
       if (stepIds.length === 0) {
         UI.println(UI.Style.TEXT_DIM + "  No steps recorded yet.")
       } else {
         for (const stepId of stepIds) {
-          const status = execution.stepStatuses[stepId]
+          const status = execution.steps[stepId]?.status
           const statusColor =
             status === "COMPLETED"
               ? UI.Style.TEXT_SUCCESS_BOLD
@@ -718,8 +720,8 @@ const WorkflowResumeCommand = cmd({
       const context = (await stateManager.getContext(executionId)) ?? {}
 
       // 5. Identify completed steps and find interrupted step
-      const completedStepIds = Object.entries(execution.stepStatuses)
-        .filter(([, status]) => status === StepExecutionStatus.COMPLETED)
+      const completedStepIds = Object.entries(execution.steps)
+        .filter(([, step]) => step.status === StepExecutionStatus.COMPLETED)
         .map(([stepId]) => stepId)
 
       const allStepIds = workflowConfig.workflow.nodes.map((n) => n.id)
@@ -924,8 +926,10 @@ const WorkflowResumeCommand = cmd({
         const workflowWithInput = createWorkflowWithInput(workflowConfig.workflow, inputStepId, originalPrompt)
 
         // 12. Execute with previous outputs (completed steps will be skipped)
+        const executionsDir = path.join(projectDir, FLOMASTER_DIR, EXECUTIONS_DIR)
         const result = await engine.executeWorkflow(workflowWithInput, `${execution.workflowName}-resume`, {
           executionId,
+          executionsDir,
           dryRun: args.dryRun,
           previousOutputs: context,
           variables: { prompt: originalPrompt },

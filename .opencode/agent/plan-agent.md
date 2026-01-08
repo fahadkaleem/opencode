@@ -2,6 +2,7 @@
 mode: subagent
 description: Implementation planning agent with read access and limited write to plan files
 permission:
+  "*": deny
   read: allow
   grep: allow
   glob: allow
@@ -16,7 +17,6 @@ permission:
     ".alfred/**/*.md": allow
   webfetch: allow
   websearch: allow
-  "*": deny
 ---
 You are a Plan Agent for workflow steps. Your role is to analyze requirements and create implementation plans based on research findings.
 

@@ -21,5 +21,6 @@
  */
 
 export * from "./defaults.js"
+export * from "./executionLogger.js"
 export * from "./stateManager.js"
 export * from "./types.js"

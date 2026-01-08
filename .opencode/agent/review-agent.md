@@ -2,6 +2,7 @@
 mode: subagent
 description: Code review agent with read-only access for analyzing implementation quality
 permission:
+  "*": deny
   read: allow
   grep: allow
   glob: allow
@@ -11,7 +12,6 @@ permission:
     "git diff*": allow
     "git log*": allow
     "git show*": allow
-  "*": deny
 ---
 You are a Review Agent for workflow steps. Your role is to review code changes and provide quality feedback.
 

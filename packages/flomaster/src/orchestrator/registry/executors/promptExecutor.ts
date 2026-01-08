@@ -4,25 +4,13 @@
  * Executes Prompt steps by interpolating template variables.
  */
 
+import { PromptExecutionError } from '../../errors.js';
 import type { ExecuteStepOutput, ParsedStep } from '../../types.js';
-import type {
-  ExecutorContext,
-  ExecutorOptions,
-  StepExecutor,
-} from '../types.js';
+import type { ExecutorContext, ExecutorOptions, StepExecutor } from '../types.js';
+import { mergeStepInputs, replaceTemplateVariables } from './executorUtils.js';
 
-/**
- * Error thrown when prompt execution fails.
- */
-export class PromptExecutionError extends Error {
-  readonly stepId: string;
-
-  constructor(message: string, stepId: string) {
-    super(message);
-    this.name = 'PromptExecutionError';
-    this.stepId = stepId;
-  }
-}
+// Re-export for backward compatibility
+export { PromptExecutionError } from '../../errors.js';
 
 /**
  * Prompt step executor.
@@ -38,9 +26,7 @@ export const promptExecutor: StepExecutor<'Prompt'> = {
     const warnings: string[] = [];
 
     if (step.config.type !== 'Prompt') {
-      errors.push(
-        `Invalid config type: expected 'Prompt', got '${step.config.type}'`,
-      );
+      errors.push(`Invalid config type: expected 'Prompt', got '${step.config.type}'`);
     } else if (!step.config.config.template) {
       errors.push('Prompt template is required');
     }
@@ -57,60 +43,23 @@ export const promptExecutor: StepExecutor<'Prompt'> = {
 
     if (config.type !== 'Prompt') {
       return Promise.reject(
-        new PromptExecutionError(
-          `Invalid config type for prompt step: ${config.type}`,
-          step.id,
-        ),
+        new PromptExecutionError(`Invalid config type for prompt step: ${config.type}`, step.id),
       );
     }
 
-    const stepInputs = { ...step.inputs };
-    for (const [stepId, stepOutputs] of Object.entries(context.outputs)) {
-      for (const [key, value] of Object.entries(stepOutputs)) {
-        if (!(key in stepInputs)) {
-          stepInputs[`${stepId}.${key}`] = value;
-        }
-      }
-    }
-
-    let template = config.config.template;
-
-    const allVars: Record<string, unknown> = {
-      ...config.config.variables,
-      ...stepInputs,
-      ...context.variables,
-    };
-
-    // Simple template interpolation ({{variable}})
-    for (const [key, value] of Object.entries(allVars)) {
-      const pattern = new RegExp(
-        `\\{\\{\\s*${escapeRegExp(key)}\\s*\\}\\}`,
-        'g',
-      );
-      template = template.replace(pattern, String(value ?? ''));
-    }
+    const stepInputs = mergeStepInputs(step, context);
+    const allVars = { ...config.config.variables, ...stepInputs, ...context.variables };
+    const template = replaceTemplateVariables(config.config.template, allVars);
 
     return Promise.resolve({
       stepId: step.id,
-      outputs: {
-        prompt: template,
-        text: template,
-      },
+      outputs: { prompt: template, text: template },
       complete: true,
     });
   },
 };
 
-/**
- * Escape special regex characters in a string.
- */
-function escapeRegExp(string: string): string {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * Factory function for creating the prompt executor.
- */
-function _createPromptExecutor(): StepExecutor<'Prompt'> {
-  return promptExecutor;
-}
+// TODO(future): Factory function for creating configurable prompt executors
+// function _createPromptExecutor(config?: PromptExecutorConfig): StepExecutor<'Prompt'> {
+//   return promptExecutor;
+// }

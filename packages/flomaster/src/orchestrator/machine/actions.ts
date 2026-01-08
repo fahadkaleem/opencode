@@ -7,13 +7,8 @@
 
 import { assign } from 'xstate';
 import { getNextRunnableSteps } from '../parser/workflowParser.js';
-import type {
-  LoopState,
-  ParsedWorkflow,
-  StepResult,
-  StepStatus,
-  WorkflowContext,
-} from '../types.js';
+import { StepExecutionStatus } from '../../state/types.js';
+import type { LoopState, ParsedWorkflow, StepResult, WorkflowContext } from '../types.js';
 import { generateExecutionId } from '../utils/idGenerator.js';
 
 /**
@@ -25,25 +20,71 @@ function getContext(ctx: unknown): WorkflowContext {
 
 /**
  * Initializes the workflow with a graph and task ID.
+ * Handles both fresh start and resume from previousOutputs.
  */
-export const initializeWorkflow = assign(({ event }) => {
+export const initializeWorkflow = assign(({ context, event }) => {
+  const ctx = getContext(context);
   const startEvent = event as {
     type: 'START';
     graph: ParsedWorkflow;
     taskId: string;
     variables?: Record<string, unknown>;
+    executionId?: string;
   };
   const graph = startEvent.graph;
+
+  // Check if we have previousOutputs (from resume operation)
+  // Steps with existing outputs are considered already completed
+  const previousOutputs = ctx.outputs ?? {};
+  const alreadyCompletedSteps = new Set<string>(Object.keys(previousOutputs));
+
+  // Determine entry points, accounting for already-completed steps
+  let initialPendingSteps: string[];
+  if (alreadyCompletedSteps.size > 0) {
+    // Resume mode: find the next runnable steps after completed ones
+    const pendingSet = new Set<string>();
+
+    // Start with entry points that aren't completed
+    for (const entryPoint of graph.entryPoints) {
+      if (!alreadyCompletedSteps.has(entryPoint)) {
+        pendingSet.add(entryPoint);
+      }
+    }
+
+    // For each completed step, find successors that can now run
+    for (const completedId of alreadyCompletedSteps) {
+      const successors = graph.adjacency.get(completedId) ?? [];
+      for (const successor of successors) {
+        // Check if all predecessors of this successor are completed
+        const predecessors = graph.reverseAdjacency.get(successor) ?? [];
+        const allPredecessorsComplete = predecessors.every((pred) => alreadyCompletedSteps.has(pred));
+        if (allPredecessorsComplete && !alreadyCompletedSteps.has(successor)) {
+          pendingSet.add(successor);
+        }
+      }
+    }
+
+    initialPendingSteps = [...pendingSet];
+  } else {
+    // Normal mode: start from entry points
+    initialPendingSteps = [...graph.entryPoints];
+  }
 
   return {
     graph,
     taskId: startEvent.taskId,
-    executionId: generateExecutionId(),
-    pendingSteps: [...graph.entryPoints],
+    // Use provided executionId or generate a new one
+    executionId: startEvent.executionId ?? generateExecutionId(),
+    pendingSteps: initialPendingSteps,
     variables: startEvent.variables ?? {},
     startTime: Date.now(),
-    completedSteps: new Set<string>(),
+    completedSteps: alreadyCompletedSteps,
     skippedSteps: new Set<string>(),
+    loopStates: new Map<string, LoopState>(),
+    stepResults: [],
+    error: null,
+    errorStack: null,
+    retryCount: 0,
   };
 });
 
@@ -53,18 +94,12 @@ export const initializeWorkflow = assign(({ event }) => {
 export const pickNextStep = assign(({ context }) => {
   const ctx = getContext(context);
   if (ctx.pendingSteps.length === 0) {
-    return {
-      currentStep: null,
-      currentStepData: null,
-    };
+    return { currentStep: null, currentStepData: null };
   }
 
   const nextStepId = ctx.pendingSteps[0];
-  if (nextStepId === undefined) {
-    return {
-      currentStep: null,
-      currentStepData: null,
-    };
+  if (nextStepId === undefined || nextStepId === '') {
+    return { currentStep: null, currentStepData: null };
   }
   const nextStep = ctx.graph?.nodes.get(nextStepId) ?? null;
 
@@ -86,40 +121,38 @@ export const saveStepOutput = assign(({ context, event }) => {
     output: {
       stepId: string;
       outputs: Record<string, unknown>;
+      sessionID?: string;
       loopState?: LoopState;
     };
   };
-  const { stepId, outputs, loopState } = doneEvent.output;
+  const { stepId, outputs, sessionID, loopState } = doneEvent.output;
 
-  const newOutputs = {
-    ...ctx.outputs,
-    [stepId]: outputs,
-  };
-
+  const newOutputs = { ...ctx.outputs, [stepId]: outputs };
   const newLoopStates = new Map(ctx.loopStates);
   if (loopState) {
     newLoopStates.set(stepId, loopState);
   }
-
-  const newCompletedSteps = new Set(ctx.completedSteps);
-  newCompletedSteps.add(stepId);
-
-  const stepResult: StepResult = {
-    stepId,
-    displayName: ctx.currentStepData?.displayName ?? stepId,
-    status: 'COMPLETED' as StepStatus,
-    outputs,
-    startTime: ctx.startTime,
-    endTime: Date.now(),
-    duration: Date.now() - ctx.startTime,
-    retryCount: ctx.retryCount,
-  };
+  const newCompleted = new Set(ctx.completedSteps);
+  newCompleted.add(stepId);
 
   return {
     outputs: newOutputs,
     loopStates: newLoopStates,
-    completedSteps: newCompletedSteps,
-    stepResults: [...ctx.stepResults, stepResult],
+    completedSteps: newCompleted,
+    stepResults: [
+      ...ctx.stepResults,
+      {
+        stepId,
+        displayName: ctx.currentStepData?.displayName ?? stepId,
+        status: StepExecutionStatus.COMPLETED,
+        outputs,
+        ...(sessionID !== undefined && { sessionID }), // Conditional spread for UI access
+        startTime: ctx.startTime,
+        endTime: Date.now(),
+        duration: Date.now() - ctx.startTime,
+        retryCount: ctx.retryCount,
+      },
+    ],
   };
 });
 
@@ -135,7 +168,7 @@ export const saveError = assign(({ context, event }) => {
   const stepResult: StepResult = {
     stepId: ctx.currentStep ?? 'unknown',
     displayName: ctx.currentStepData?.displayName ?? 'unknown',
-    status: 'FAILED' as StepStatus,
+    status: StepExecutionStatus.FAILED,
     outputs: {},
     error: error.message,
     ...(stackTrace !== undefined && { stackTrace }),

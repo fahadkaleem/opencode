@@ -157,37 +157,31 @@ describe("guards", () => {
   })
 
   describe("isLoopContinue", () => {
-    it("should return true when loop has more items", () => {
-      const loopState: LoopState = {
-        stepId: "loop-1",
-        data: [1, 2, 3],
-        index: 1,
-        aggregated: [],
-        initialized: true,
-      }
-      const context = createContext({
-        currentStep: "loop-1",
-        loopStates: new Map([["loop-1", loopState]]),
-      })
-      expect(isLoopContinue({ context, event: {} })).toBe(true)
+    it("should return true when event.output.complete is false", () => {
+      const context = createContext({ currentStep: "loop-1" })
+      const event = { output: { complete: false } }
+      expect(isLoopContinue({ context, event })).toBe(true)
     })
 
-    it("should return false when loop is at last item", () => {
-      const loopState: LoopState = {
-        stepId: "loop-1",
-        data: [1, 2, 3],
-        index: 2,
-        aggregated: [],
-        initialized: true,
-      }
-      const context = createContext({
-        currentStep: "loop-1",
-        loopStates: new Map([["loop-1", loopState]]),
-      })
+    it("should return false when event.output.complete is true", () => {
+      const context = createContext({ currentStep: "loop-1" })
+      const event = { output: { complete: true } }
+      expect(isLoopContinue({ context, event })).toBe(false)
+    })
+
+    it("should return false when event has no output", () => {
+      const context = createContext({ currentStep: "loop-1" })
       expect(isLoopContinue({ context, event: {} })).toBe(false)
     })
 
-    it("should return false when loop is not initialized", () => {
+    it("should return false when currentStep is null", () => {
+      const context = createContext({ currentStep: null })
+      const event = { output: { complete: false } }
+      expect(isLoopContinue({ context, event })).toBe(false)
+    })
+
+    // Legacy test kept for documentation - loopState is no longer used by this guard
+    it.skip("should return false when loop is not initialized (legacy behavior)", () => {
       const loopState: LoopState = {
         stepId: "loop-1",
         data: [1, 2, 3],

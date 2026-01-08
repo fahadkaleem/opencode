@@ -14,20 +14,21 @@ import { workflowMachine } from "../machine/workflowMachine.js"
 import { CycleDetectedError } from "../parser/topology.js"
 import { parseWorkflow, validateWorkflow, WorkflowParseError } from "../parser/workflowParser.js"
 import type { StepExecutorRegistry } from "../registry/stepExecutorRegistry.js"
-import type {
-  ExecutionOptions,
-  ExecutionSnapshot,
-  ParsedWorkflow,
-  StepExecutionEvent,
-  Subscription,
-  ValidationResult,
-  WorkflowActorInput,
-  WorkflowContext,
-  WorkflowData,
-  WorkflowEvent,
-  WorkflowEventListener,
-  WorkflowResult,
-  WorkflowTerminateMode,
+import {
+  getErrorMessage,
+  type ExecutionOptions,
+  type ExecutionSnapshot,
+  type ParsedWorkflow,
+  type StepExecutionEvent,
+  type Subscription,
+  type ValidationResult,
+  type WorkflowActorInput,
+  type WorkflowContext,
+  type WorkflowData,
+  type WorkflowEvent,
+  type WorkflowEventListener,
+  type WorkflowResult,
+  type WorkflowTerminateMode,
 } from "../types.js"
 import { validateWorkflowSchema } from "../utils/schemaValidator.js"
 
@@ -242,7 +243,7 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
       const content = await fs.readFile(filePath, "utf-8")
       return JSON.parse(content) as WorkflowData
     } catch (error) {
-      throw new Error(`Failed to load workflow '${name}': ${error instanceof Error ? error.message : String(error)}`)
+      throw new Error(`Failed to load workflow '${name}': ${getErrorMessage(error)}`)
     }
   }
 
@@ -305,7 +306,7 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
       } else {
         errors.push({
           code: "UNKNOWN_ERROR",
-          message: error instanceof Error ? error.message : String(error),
+          message: getErrorMessage(error),
         })
       }
     }
@@ -332,7 +333,7 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
     try {
       parsed = parseWorkflow(graph)
     } catch (error) {
-      return this.createFailedResult(taskId, startTime, error instanceof Error ? error.message : String(error))
+      return this.createFailedResult(taskId, startTime, getErrorMessage(error))
     }
 
     // Create parent session for the workflow (agent steps create child sessions)
@@ -356,6 +357,7 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
     const input: WorkflowActorInput = {
       graph: parsed,
       taskId,
+      executionsDir: options?.executionsDir,
       workflowSessionID,
       signal: options?.signal,
       outputs: (options?.previousOutputs ?? {}) as Record<string, Record<string, unknown>>,
@@ -399,7 +401,7 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
         this.emitEvent({
           type: "WORKFLOW_FAILED",
           executionId,
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
         })
         this.cleanupExecution(executionId)
       },
@@ -439,7 +441,7 @@ export class DefaultWorkflowEngine implements WorkflowEngine {
       return this.createResult(executionId, startTime, finalSnapshot.context)
     } catch (error) {
       clearTimeout(timeoutId)
-      return this.createFailedResult(executionId, startTime, error instanceof Error ? error.message : String(error))
+      return this.createFailedResult(executionId, startTime, getErrorMessage(error))
     }
   }
 

@@ -6,27 +6,14 @@
  */
 
 import { fromPromise } from "xstate"
+import { StepExecutionError } from "../errors.js"
 import type { StepExecutorRegistry } from "../registry/stepExecutorRegistry.js"
 import type { ExecutorContext, ExecutorOptions } from "../registry/types.js"
 import type { ExecuteStepInput, ExecuteStepOutput, LoopState, StepExecutionEvent } from "../types.js"
 import { advanceLoop } from "./loopActor.js"
 
-/**
- * Error thrown when step execution fails.
- */
-export class StepExecutionError extends Error {
-  readonly stepId: string
-  readonly originalCause?: Error
-
-  constructor(message: string, stepId: string, originalCause?: Error) {
-    super(message)
-    this.name = "StepExecutionError"
-    this.stepId = stepId
-    if (originalCause !== undefined) {
-      this.originalCause = originalCause
-    }
-  }
-}
+// Re-export for backward compatibility
+export { StepExecutionError } from "../errors.js"
 
 /**
  * Advances a loop to the next iteration.
@@ -51,6 +38,8 @@ export function advanceLoopState(
  */
 function buildExecutorContext(input: ExecuteStepInput): ExecutorContext {
   return {
+    executionId: input.executionId,
+    executionsDir: input.executionsDir,
     outputs: input.outputs,
     variables: input.variables,
     dryRun: input.dryRun,

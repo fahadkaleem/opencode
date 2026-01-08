@@ -4,6 +4,14 @@
  * All type definitions for the workflow orchestration engine.
  */
 
+// Re-export from registry/types.ts to avoid circular dependency
+// These types are defined in registry/types.ts but re-exported here for backward compatibility
+export type {
+  StepExecutionEvent,
+  StepEventEmitter,
+  StepExecutorRegistryInterface,
+} from "./registry/types.js"
+
 /**
  * Position in the workflow canvas.
  */
@@ -632,8 +640,9 @@ export type ValidationResult = {
 
 /**
  * Status of a step execution.
+ * Derived from StepExecutionStatus enum for single source of truth.
  */
-export type StepStatus = "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED" | "WAITING_APPROVAL"
+export type { StepExecutionStatus as StepStatus } from "../state/types.js"
 
 /**
  * Result of executing a single step.
@@ -707,6 +716,8 @@ export type ExecutionOptions = {
   readonly autoApprove?: boolean
   /** Pre-generated execution ID (for state manager synchronization) */
   readonly executionId?: string
+  /** Absolute path to executions directory (for logs, state files) */
+  readonly executionsDir?: string
 }
 
 /**
@@ -853,6 +864,8 @@ export type WorkflowContext = {
   readonly taskId: string
   /** Unique execution ID */
   readonly executionId: string
+  /** Absolute path to executions directory (for logs, state files) */
+  readonly executionsDir?: string
   /** Parent session ID for the workflow (agent steps create child sessions) */
   readonly workflowSessionID?: string
   /** Abort signal for cancellation */
@@ -888,7 +901,7 @@ export type WorkflowContext = {
   /** Steps that have been skipped */
   readonly skippedSteps: ReadonlySet<string>
   /** Step executor registry for pluggable execution */
-  readonly executorRegistry?: unknown // Typed as unknown to avoid circular dependency
+  readonly executorRegistry?: StepExecutorRegistryInterface
 }
 
 /**
@@ -927,20 +940,6 @@ export type WorkflowMachineEvent =
   | { type: "TIMEOUT" }
 
 /**
- * Event emitted during step execution for streaming updates.
- */
-export type StepExecutionEvent =
-  | { type: "progress"; stepId: string; content: string }
-  | { type: "tool_start"; stepId: string; toolName: string; toolArgs: unknown }
-  | { type: "tool_end"; stepId: string; toolName: string; toolResult: unknown }
-  | { type: "session_created"; stepId: string; sessionId: string; agentName: string }
-
-/**
- * Callback for emitting step execution events.
- */
-export type StepEventEmitter = (event: StepExecutionEvent) => void
-
-/**
  * Input for the execute step actor.
  */
 export type ExecuteStepInput = {
@@ -948,6 +947,8 @@ export type ExecuteStepInput = {
   readonly step: ParsedStep
   /** Execution ID for looking up step event emitter */
   readonly executionId: string
+  /** Absolute path to executions directory (for logs, state files) */
+  readonly executionsDir?: string
   /** Parent session ID for the workflow (agent steps create child sessions) */
   readonly workflowSessionID?: string
   /** Outputs from previous steps */
@@ -959,7 +960,7 @@ export type ExecuteStepInput = {
   /** Loop states for loop steps */
   readonly loopStates: ReadonlyMap<string, LoopState>
   /** Step executor registry for pluggable execution */
-  readonly executorRegistry?: unknown // Typed as unknown to avoid circular dependency
+  readonly executorRegistry?: StepExecutorRegistryInterface
   /** Abort signal for cancellation propagation */
   readonly signal?: AbortSignal
 }
@@ -1004,6 +1005,8 @@ export type WorkflowActorInput = {
   readonly graph: ParsedWorkflow
   /** Task ID */
   readonly taskId: string
+  /** Absolute path to executions directory (for logs, state files) */
+  readonly executionsDir?: string
   /** Parent session ID for the workflow (agent steps create child sessions) */
   readonly workflowSessionID?: string
   /** Abort signal for cancellation */
@@ -1019,7 +1022,7 @@ export type WorkflowActorInput = {
   /** Maximum retries per node */
   readonly maxRetries?: number
   /** Step executor registry for pluggable execution */
-  readonly executorRegistry?: unknown // Typed as unknown to avoid circular dependency
+  readonly executorRegistry?: StepExecutorRegistryInterface
 }
 
 /**

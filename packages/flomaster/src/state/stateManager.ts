@@ -2,27 +2,16 @@
  * State Manager
  *
  * Interface and implementation for workflow execution state management.
- * Uses direct Session/Message access instead of SDK client.
+ * Uses a single execution.json file per execution for all state.
  */
 
 import * as fs from "node:fs/promises"
 import * as path from "node:path"
 import { Session } from "opencode/session/index"
-import {
-  CHECKPOINT_FILENAME,
-  CHECKPOINT_VERSION,
-  CONTEXT_FILENAME,
-  DEFAULT_CHECKPOINT_ON_STEP_COMPLETE,
-  DEFAULT_LIST_LIMIT,
-  FLOMASTER_DIR,
-  EXECUTIONS_DIR,
-  MAPPING_FILENAME,
-  STATE_FILENAME,
-} from "./defaults.js"
+import { DEFAULT_LIST_LIMIT, FLOMASTER_DIR, EXECUTIONS_DIR, EXECUTION_FILENAME } from "./defaults.js"
 import {
   deleteDirectory,
   fileExists,
-  isNodeError,
   LockManager,
   listSubdirectories,
   readJsonFile,
@@ -30,19 +19,24 @@ import {
   writeJsonFile,
 } from "./internal/index.js"
 import type {
-  ExecutionCheckpoint,
+  Execution,
   ExecutionFilter,
+  ExecutionStep,
   ExecutionSummary,
   IncompleteExecution,
   SessionDetails,
   SessionMessage,
   SharedContext,
-  StateManagerConfig,
   StepResult,
-  WorkflowExecution,
 } from "./types.js"
 
-import { ExecutionStatus, isActiveStatus, StepExecutionStatus } from "./types.js"
+import {
+  ExecutionStatus,
+  isActiveStatus,
+  isTerminalStatus,
+  StepExecutionStatus,
+  EXECUTION_SCHEMA_VERSION,
+} from "./types.js"
 
 // ---
 // Error Classes
@@ -84,21 +78,16 @@ export class AlreadyExistsError extends Error {
  * StateManager interface.
  *
  * Manages workflow execution state, shared context, step-session mapping,
- * and crash recovery.
+ * and crash recovery using a single execution.json file per execution.
  */
 export type StateManager = {
   // Lifecycle
   initialize(): Promise<void>
   isInitialized(): boolean
 
-  // Workflow Execution State
-  createExecution(
-    executionId: string,
-    workflowName: string,
-    workflowId?: string,
-    taskId?: string,
-  ): Promise<WorkflowExecution>
-  getExecution(executionId: string): Promise<WorkflowExecution | null>
+  // Execution State - returns Execution type
+  createExecution(executionId: string, workflowName: string, workflowId?: string, taskId?: string): Promise<Execution>
+  getExecution(executionId: string): Promise<Execution | null>
   updateStepStatus(executionId: string, stepId: string, status: StepExecutionStatus): Promise<void>
   recordStepResult(executionId: string, stepId: string, result: StepResult): Promise<void>
   updateExecutionStatus(executionId: string, status: ExecutionStatus): Promise<void>
@@ -106,20 +95,20 @@ export type StateManager = {
   listExecutions(filter?: ExecutionFilter): Promise<ExecutionSummary[]>
   deleteExecution(executionId: string): Promise<boolean>
 
-  // Shared Context
+  // Context (derived from steps)
   getContext(executionId: string): Promise<SharedContext | null>
   setContextValue(executionId: string, stepId: string, key: string, value: unknown): Promise<void>
   getContextValue(executionId: string, path: string): Promise<unknown>
   mergeStepOutputs(executionId: string, stepId: string, outputs: Record<string, unknown>): Promise<void>
 
-  // Step-Session Mapping
+  // Session Mapping (stored in steps)
   mapStepToSession(executionId: string, stepId: string, sessionId: string): Promise<void>
   getSessionForStep(executionId: string, stepId: string): Promise<string | null>
   getStepsForSession(sessionId: string): Promise<Array<{ executionId: string; stepId: string }>>
 
-  // Checkpoint & Recovery
+  // Checkpoint (execution.json IS the checkpoint)
   saveCheckpoint(executionId: string): Promise<string>
-  loadCheckpoint(executionId: string): Promise<ExecutionCheckpoint | null>
+  loadCheckpoint(executionId: string): Promise<Execution | null>
   listIncompleteExecutions(): Promise<IncompleteExecution[]>
   setRecoverable(executionId: string, recoverable: boolean): Promise<void>
   hasCheckpoint(executionId: string): Promise<boolean>
@@ -138,24 +127,43 @@ export type StateManager = {
 /**
  * Default implementation of StateManager.
  *
- * Manages workflow execution state with file-based persistence,
- * in-memory caching, and mutex locking for concurrent access.
+ * Manages workflow execution state with file-based persistence using
+ * a single execution.json file per execution. Includes in-memory caching
+ * and mutex locking for concurrent access.
  */
+/** Maximum number of executions to cache in memory (LRU eviction) */
+const MAX_CACHE_SIZE = 100
+
 export class DefaultStateManager implements StateManager {
   private initialized = false
   private readonly executionsDir: string
-  private readonly checkpointOnStepComplete: boolean
 
-  // In-memory cache
-  private readonly executionCache = new Map<string, WorkflowExecution>()
-  private readonly contextCache = new Map<string, SharedContext>()
-  private readonly mappingCache = new Map<string, Record<string, string>>()
+  // Bounded LRU cache for Execution objects
+  private readonly executionCache = new Map<string, Execution>()
 
   private readonly lockManager = new LockManager()
 
-  constructor(config?: StateManagerConfig) {
+  constructor(config?: { executionsDir?: string }) {
     this.executionsDir = config?.executionsDir ?? path.join(FLOMASTER_DIR, EXECUTIONS_DIR)
-    this.checkpointOnStepComplete = config?.checkpointOnStepComplete ?? DEFAULT_CHECKPOINT_ON_STEP_COMPLETE
+  }
+
+  /**
+   * Add or update an execution in the cache with LRU eviction.
+   * When the cache is full, the oldest entry is evicted.
+   */
+  private setCached(executionId: string, execution: Execution): void {
+    // Delete first to ensure this entry becomes the newest (Map maintains insertion order)
+    this.executionCache.delete(executionId)
+
+    // Evict oldest entry if at capacity
+    if (this.executionCache.size >= MAX_CACHE_SIZE) {
+      const oldestKey = this.executionCache.keys().next().value
+      if (oldestKey) {
+        this.executionCache.delete(oldestKey)
+      }
+    }
+
+    this.executionCache.set(executionId, execution)
   }
 
   private assertInitialized(): void {
@@ -164,18 +172,9 @@ export class DefaultStateManager implements StateManager {
     }
   }
 
-  private async withExecutionLock<T>(
-    executionId: string,
-    fn: (execution: WorkflowExecution) => Promise<T>,
-  ): Promise<T> {
+  private async withExecutionLock<T>(executionId: string, fn: () => Promise<T>): Promise<T> {
     this.assertInitialized()
-    return this.lockManager.withLock(executionId, async () => {
-      const execution = await this.getExecution(executionId)
-      if (!execution) {
-        throw new NotFoundError("Execution", executionId)
-      }
-      return fn(execution)
-    })
+    return this.lockManager.withLock(executionId, fn)
   }
 
   private getExecutionDir(executionId: string): string {
@@ -183,113 +182,21 @@ export class DefaultStateManager implements StateManager {
     return path.join(this.executionsDir, executionId)
   }
 
-  private getStatePath(executionId: string): string {
-    return path.join(this.getExecutionDir(executionId), STATE_FILENAME)
+  private getExecutionPath(executionId: string): string {
+    return path.join(this.getExecutionDir(executionId), EXECUTION_FILENAME)
   }
 
-  private getContextPath(executionId: string): string {
-    return path.join(this.getExecutionDir(executionId), CONTEXT_FILENAME)
-  }
+  private async getExecutionInternal(executionId: string): Promise<Execution | null> {
+    const cached = this.executionCache.get(executionId)
+    if (cached) return cached
 
-  private getMappingPath(executionId: string): string {
-    return path.join(this.getExecutionDir(executionId), MAPPING_FILENAME)
-  }
+    const execution = await readJsonFile<Execution>(this.getExecutionPath(executionId))
 
-  private getCheckpointPath(executionId: string): string {
-    return path.join(this.getExecutionDir(executionId), CHECKPOINT_FILENAME)
-  }
-
-  private async loadCached<T>(
-    executionId: string,
-    cache: Map<string, T>,
-    getPath: (id: string) => string,
-    defaultValue: T,
-  ): Promise<T> {
-    const cached = cache.get(executionId)
-    if (cached != null) {
-      return cached
+    if (execution) {
+      this.setCached(executionId, execution)
     }
 
-    const data = await readJsonFile<T>(getPath(executionId))
-    if (data != null) {
-      cache.set(executionId, data)
-      return data
-    }
-
-    return defaultValue
-  }
-
-  private async loadContext(executionId: string): Promise<SharedContext> {
-    return this.loadCached(executionId, this.contextCache, (id) => this.getContextPath(id), {})
-  }
-
-  private async saveContext(executionId: string, context: SharedContext): Promise<void> {
-    await writeJsonFile(this.getContextPath(executionId), context)
-    this.contextCache.set(executionId, context)
-  }
-
-  private async loadMapping(executionId: string): Promise<Record<string, string>> {
-    return this.loadCached(executionId, this.mappingCache, (id) => this.getMappingPath(id), {})
-  }
-
-  private async saveMapping(executionId: string, mapping: Record<string, string>): Promise<void> {
-    await writeJsonFile(this.getMappingPath(executionId), mapping)
-    this.mappingCache.set(executionId, mapping)
-  }
-
-  // Internal methods (no lock - for use inside locked blocks)
-  private async mergeStepOutputsInternal(
-    executionId: string,
-    stepId: string,
-    outputs: Record<string, unknown>,
-  ): Promise<void> {
-    const context = await this.loadContext(executionId)
-    const updated: SharedContext = {
-      ...context,
-      [stepId]: outputs,
-    }
-    await this.saveContext(executionId, updated)
-  }
-
-  private async mapStepToSessionInternal(executionId: string, stepId: string, sessionId: string): Promise<void> {
-    const mapping = await this.loadMapping(executionId)
-
-    // Skip if already mapped (idempotent)
-    if (mapping[stepId] !== undefined) {
-      return
-    }
-
-    const updated = {
-      ...mapping,
-      [stepId]: sessionId,
-    }
-    await this.saveMapping(executionId, updated)
-  }
-
-  private async saveCheckpointInternal(executionId: string): Promise<string> {
-    const execution = await this.getExecution(executionId)
-    if (!execution) {
-      throw new NotFoundError("Execution", executionId)
-    }
-
-    const context = await this.loadContext(executionId)
-    const sessionMappings = await this.loadMapping(executionId)
-
-    const checkpoint: ExecutionCheckpoint = {
-      executionId,
-      workflowName: execution.workflowName,
-      execution,
-      context,
-      sessionMappings,
-      timestamp: new Date().toISOString(),
-      checksum: "", // TODO: Implement SHA-256 checksum
-      version: CHECKPOINT_VERSION,
-    }
-
-    const checkpointPath = this.getCheckpointPath(executionId)
-    await writeJsonFile(checkpointPath, checkpoint)
-
-    return checkpointPath
+    return execution
   }
 
   // Lifecycle
@@ -300,11 +207,15 @@ export class DefaultStateManager implements StateManager {
 
     await fs.mkdir(this.executionsDir, { recursive: true })
 
+    // Pre-load active executions into cache
     const executionIds = await listSubdirectories(this.executionsDir)
+
     for (const executionId of executionIds) {
-      const execution = await readJsonFile<WorkflowExecution>(this.getStatePath(executionId))
+      const executionPath = this.getExecutionPath(executionId)
+      const execution = await readJsonFile<Execution>(executionPath)
+
       if (execution && isActiveStatus(execution.status)) {
-        this.executionCache.set(executionId, execution)
+        this.setCached(executionId, execution)
       }
     }
 
@@ -315,138 +226,142 @@ export class DefaultStateManager implements StateManager {
     return this.initialized
   }
 
-  // Workflow Execution State
+  // Execution State
   async createExecution(
     executionId: string,
     workflowName: string,
     workflowId?: string,
     taskId?: string,
-  ): Promise<WorkflowExecution> {
+  ): Promise<Execution> {
     this.assertInitialized()
 
     return this.lockManager.withLock(executionId, async () => {
-      if (await fileExists(this.getStatePath(executionId))) {
+      const executionPath = this.getExecutionPath(executionId)
+
+      if (await fileExists(executionPath)) {
         throw new AlreadyExistsError("Execution", executionId)
       }
 
       const now = new Date().toISOString()
-      const execution: WorkflowExecution = {
-        executionId,
+      const execution: Execution = {
+        id: executionId,
         workflowName,
-        ...(workflowId !== undefined && { workflowId }),
-        ...(taskId !== undefined && { taskId }),
-        status: ExecutionStatus.CREATED,
-        stepStatuses: {},
-        stepResults: {},
+        workflowId,
+        taskId,
         createdAt: now,
+        status: ExecutionStatus.CREATED,
         updatedAt: now,
+        steps: {},
+        version: EXECUTION_SCHEMA_VERSION,
+        recoverable: true,
       }
 
-      await writeJsonFile(this.getStatePath(executionId), execution)
-      await writeJsonFile(this.getContextPath(executionId), {})
-      await writeJsonFile(this.getMappingPath(executionId), {})
-
-      this.executionCache.set(executionId, execution)
-      this.contextCache.set(executionId, {})
-      this.mappingCache.set(executionId, {})
+      await writeJsonFile(executionPath, execution)
+      this.setCached(executionId, execution)
 
       return execution
     })
   }
 
-  async getExecution(executionId: string): Promise<WorkflowExecution | null> {
+  async getExecution(executionId: string): Promise<Execution | null> {
     this.assertInitialized()
-
-    const cached = this.executionCache.get(executionId)
-    if (cached) {
-      return cached
-    }
-
-    const execution = await readJsonFile<WorkflowExecution>(this.getStatePath(executionId))
-    if (execution) {
-      if (isActiveStatus(execution.status)) {
-        this.executionCache.set(executionId, execution)
-      }
-    }
-
-    return execution
+    return this.getExecutionInternal(executionId)
   }
 
   async updateStepStatus(executionId: string, stepId: string, status: StepExecutionStatus): Promise<void> {
-    await this.withExecutionLock(executionId, async (execution) => {
-      const updated: WorkflowExecution = {
+    await this.withExecutionLock(executionId, async () => {
+      const execution = await this.getExecutionInternal(executionId)
+      if (!execution) {
+        throw new NotFoundError("Execution", executionId)
+      }
+
+      const now = new Date().toISOString()
+      const step = execution.steps[stepId] ?? { status: StepExecutionStatus.PENDING }
+
+      const updated: Execution = {
         ...execution,
-        stepStatuses: {
-          ...execution.stepStatuses,
-          [stepId]: status,
+        updatedAt: now,
+        // Auto-transition to RUNNING on first step
+        status: execution.status === ExecutionStatus.CREATED ? ExecutionStatus.RUNNING : execution.status,
+        startedAt: execution.startedAt ?? (status === StepExecutionStatus.RUNNING ? now : undefined),
+        steps: {
+          ...execution.steps,
+          [stepId]: { ...step, status },
         },
-        updatedAt: new Date().toISOString(),
       }
 
-      // Auto-transition CREATED -> RUNNING when first step starts
-      if (status === StepExecutionStatus.RUNNING && execution.status === ExecutionStatus.CREATED) {
-        ;(updated as { status: ExecutionStatus }).status = ExecutionStatus.RUNNING
-      }
-
-      await writeJsonFile(this.getStatePath(executionId), updated)
-      this.executionCache.set(executionId, updated)
+      await writeJsonFile(this.getExecutionPath(executionId), updated)
+      this.setCached(executionId, updated)
     })
   }
 
   async recordStepResult(executionId: string, stepId: string, result: StepResult): Promise<void> {
-    await this.withExecutionLock(executionId, async (execution) => {
-      const updated: WorkflowExecution = {
+    await this.withExecutionLock(executionId, async () => {
+      const execution = await this.getExecutionInternal(executionId)
+      if (!execution) {
+        throw new NotFoundError("Execution", executionId)
+      }
+
+      const now = new Date().toISOString()
+      const existingStep = execution.steps[stepId] ?? { status: StepExecutionStatus.PENDING }
+
+      // Build updated step with all data in one place
+      const updatedStep: ExecutionStep = {
+        ...existingStep,
+        status: result.status,
+        startTime: result.startTime ?? existingStep.startTime,
+        endTime: result.endTime,
+        outputs: result.outputs,
+        sessionId: result.sessionId,
+        error: result.error,
+        errorHistory: result.errorHistory,
+        retryCount: result.retryCount,
+      }
+
+      const updated: Execution = {
         ...execution,
-        stepStatuses: {
-          ...execution.stepStatuses,
-          [stepId]: result.status,
+        updatedAt: now,
+        steps: {
+          ...execution.steps,
+          [stepId]: updatedStep,
         },
-        stepResults: {
-          ...execution.stepResults,
-          [stepId]: result,
-        },
-        updatedAt: new Date().toISOString(),
       }
 
-      await writeJsonFile(this.getStatePath(executionId), updated)
-      this.executionCache.set(executionId, updated)
-
-      if (result.status === StepExecutionStatus.COMPLETED && result.outputs) {
-        await this.mergeStepOutputsInternal(executionId, stepId, result.outputs)
-      }
-
-      if (result.sessionId != null) {
-        await this.mapStepToSessionInternal(executionId, stepId, result.sessionId)
-      }
-
-      if (this.checkpointOnStepComplete) {
-        await this.saveCheckpointInternal(executionId)
-      }
+      // Single atomic write
+      await writeJsonFile(this.getExecutionPath(executionId), updated)
+      this.setCached(executionId, updated)
     })
   }
 
   async updateExecutionStatus(executionId: string, status: ExecutionStatus): Promise<void> {
-    await this.withExecutionLock(executionId, async (execution) => {
-      const updated: WorkflowExecution = {
-        ...execution,
-        status,
-        updatedAt: new Date().toISOString(),
+    await this.withExecutionLock(executionId, async () => {
+      const execution = await this.getExecutionInternal(executionId)
+      if (!execution) {
+        throw new NotFoundError("Execution", executionId)
       }
 
-      await writeJsonFile(this.getStatePath(executionId), updated)
-      this.executionCache.set(executionId, updated)
+      const now = new Date().toISOString()
+      const updated: Execution = {
+        ...execution,
+        status,
+        updatedAt: now,
+        completedAt: isTerminalStatus(status) ? now : execution.completedAt,
+      }
+
+      await writeJsonFile(this.getExecutionPath(executionId), updated)
+      this.setCached(executionId, updated)
     })
   }
 
   async getStepStatus(executionId: string, stepId: string): Promise<StepExecutionStatus | null> {
     this.assertInitialized()
 
-    const execution = await this.getExecution(executionId)
+    const execution = await this.getExecutionInternal(executionId)
     if (!execution) {
       return null
     }
 
-    return execution.stepStatuses[stepId] ?? null
+    return execution.steps[stepId]?.status ?? null
   }
 
   async listExecutions(filter?: ExecutionFilter): Promise<ExecutionSummary[]> {
@@ -456,8 +371,8 @@ export class DefaultStateManager implements StateManager {
     const summaries: ExecutionSummary[] = []
 
     for (const executionId of executionIds) {
-      const execution = await this.getExecution(executionId)
-      if (execution == null) continue
+      const execution = await this.getExecutionInternal(executionId)
+      if (!execution) continue
 
       // Status filter
       if (filter?.status !== undefined) {
@@ -480,11 +395,14 @@ export class DefaultStateManager implements StateManager {
         continue
       }
 
-      const stepIds = Object.keys(execution.stepStatuses)
-      const completedCount = stepIds.filter((id) => execution.stepStatuses[id] === StepExecutionStatus.COMPLETED).length
+      // Count steps
+      const stepIds = Object.keys(execution.steps)
+      const completedCount = Object.values(execution.steps).filter(
+        (step) => step.status === StepExecutionStatus.COMPLETED,
+      ).length
 
       summaries.push({
-        executionId: execution.executionId,
+        executionId: execution.id,
         workflowId: execution.workflowId,
         workflowName: execution.workflowName,
         taskId: execution.taskId,
@@ -498,6 +416,7 @@ export class DefaultStateManager implements StateManager {
       })
     }
 
+    // Sort by updatedAt descending
     summaries.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
 
     const limit = filter?.limit ?? DEFAULT_LIST_LIMIT
@@ -506,110 +425,144 @@ export class DefaultStateManager implements StateManager {
 
   async deleteExecution(executionId: string): Promise<boolean> {
     this.assertInitialized()
+    validateExecutionId(executionId)
 
     return this.lockManager.withLock(executionId, async () => {
-      const deleted = await deleteDirectory(this.getExecutionDir(executionId))
+      const executionDir = this.getExecutionDir(executionId)
+      const exists = await fileExists(executionDir)
 
-      if (deleted) {
-        this.executionCache.delete(executionId)
-        this.contextCache.delete(executionId)
-        this.mappingCache.delete(executionId)
-        this.lockManager.removeLock(executionId)
-      }
+      if (!exists) return false
 
-      return deleted
+      await deleteDirectory(executionDir)
+      this.executionCache.delete(executionId)
+      this.lockManager.removeLock(executionId)
+
+      return true
     })
   }
 
-  // Shared Context
+  // Context (derived from steps)
   async getContext(executionId: string): Promise<SharedContext | null> {
     this.assertInitialized()
+    const execution = await this.getExecutionInternal(executionId)
+    if (!execution) return null
 
-    const execution = await this.getExecution(executionId)
-    if (!execution) {
-      return null
+    // Build SharedContext from steps
+    const context: SharedContext = {}
+    for (const [stepId, step] of Object.entries(execution.steps)) {
+      if (step.outputs) {
+        context[stepId] = step.outputs
+      }
     }
-
-    return this.loadContext(executionId)
+    return context
   }
 
   async setContextValue(executionId: string, stepId: string, key: string, value: unknown): Promise<void> {
     await this.withExecutionLock(executionId, async () => {
-      const context = await this.loadContext(executionId)
-      const updated: SharedContext = {
-        ...context,
-        [stepId]: {
-          ...context[stepId],
-          [key]: value,
+      const execution = await this.getExecutionInternal(executionId)
+      if (!execution) {
+        throw new NotFoundError("Execution", executionId)
+      }
+
+      const existingStep = execution.steps[stepId] ?? { status: StepExecutionStatus.PENDING }
+      const existingOutputs = existingStep.outputs ?? {}
+
+      const updated: Execution = {
+        ...execution,
+        updatedAt: new Date().toISOString(),
+        steps: {
+          ...execution.steps,
+          [stepId]: {
+            ...existingStep,
+            outputs: { ...existingOutputs, [key]: value },
+          },
         },
       }
 
-      await this.saveContext(executionId, updated)
-      return undefined
+      await writeJsonFile(this.getExecutionPath(executionId), updated)
+      this.setCached(executionId, updated)
     })
   }
 
   async getContextValue(executionId: string, dotPath: string): Promise<unknown> {
     this.assertInitialized()
+    const execution = await this.getExecutionInternal(executionId)
+    if (!execution) return undefined
 
-    const context = await this.getContext(executionId)
-    if (context === null) {
-      return undefined
-    }
-
+    // Parse path like "research.summary" -> stepId="research", key="summary"
     const parts = dotPath.split(".")
+    if (parts.length < 2) return undefined
+
     const stepId = parts[0]
-    const key = parts[1]
-    if (stepId === undefined || key === undefined) {
-      return undefined
+    if (!stepId) return undefined
+    const rest = parts.slice(1)
+    const step = execution.steps[stepId]
+    if (!step?.outputs) return undefined
+
+    // Navigate nested path
+    let value: unknown = step.outputs
+    for (const part of rest) {
+      if (value === null || value === undefined) return undefined
+      if (typeof value !== "object") return undefined
+      value = (value as Record<string, unknown>)[part]
     }
 
-    return context[stepId]?.[key]
+    return value
   }
 
   async mergeStepOutputs(executionId: string, stepId: string, outputs: Record<string, unknown>): Promise<void> {
     await this.withExecutionLock(executionId, async () => {
-      const context = await this.loadContext(executionId)
-      const updated: SharedContext = {
-        ...context,
-        [stepId]: outputs,
+      const execution = await this.getExecutionInternal(executionId)
+      if (!execution) {
+        throw new NotFoundError("Execution", executionId)
       }
 
-      await this.saveContext(executionId, updated)
-      return undefined
+      const existingStep = execution.steps[stepId] ?? { status: StepExecutionStatus.PENDING }
+      const updated: Execution = {
+        ...execution,
+        updatedAt: new Date().toISOString(),
+        steps: {
+          ...execution.steps,
+          [stepId]: { ...existingStep, outputs },
+        },
+      }
+
+      await writeJsonFile(this.getExecutionPath(executionId), updated)
+      this.setCached(executionId, updated)
     })
   }
 
-  // Step-Session Mapping
+  // Session Mapping (stored in steps)
   async mapStepToSession(executionId: string, stepId: string, sessionId: string): Promise<void> {
     await this.withExecutionLock(executionId, async () => {
-      const mapping = await this.loadMapping(executionId)
-
-      // Contract invariant: Session mapping is immutable once set
-      if (mapping[stepId] !== undefined) {
-        throw new AlreadyExistsError("Step-session mapping", `${executionId}/${stepId}`)
+      const execution = await this.getExecutionInternal(executionId)
+      if (!execution) {
+        throw new NotFoundError("Execution", executionId)
       }
 
-      const updated = {
-        ...mapping,
-        [stepId]: sessionId,
+      const existingStep = execution.steps[stepId]
+      if (existingStep?.sessionId) {
+        throw new AlreadyExistsError("Step-session mapping", `${stepId}:${sessionId}`)
       }
 
-      await this.saveMapping(executionId, updated)
-      return undefined
+      const updated: Execution = {
+        ...execution,
+        updatedAt: new Date().toISOString(),
+        steps: {
+          ...execution.steps,
+          [stepId]: { ...(existingStep ?? { status: StepExecutionStatus.PENDING }), sessionId },
+        },
+      }
+
+      await writeJsonFile(this.getExecutionPath(executionId), updated)
+      this.setCached(executionId, updated)
     })
   }
 
   async getSessionForStep(executionId: string, stepId: string): Promise<string | null> {
     this.assertInitialized()
-
-    const execution = await this.getExecution(executionId)
-    if (!execution) {
-      return null
-    }
-
-    const mapping = await this.loadMapping(executionId)
-    return mapping[stepId] ?? null
+    const execution = await this.getExecutionInternal(executionId)
+    return execution?.steps[stepId]?.sessionId ?? null
   }
 
   async getStepsForSession(sessionId: string): Promise<Array<{ executionId: string; stepId: string }>> {
@@ -619,9 +572,11 @@ export class DefaultStateManager implements StateManager {
     const executionIds = await listSubdirectories(this.executionsDir)
 
     for (const executionId of executionIds) {
-      const mapping = await this.loadMapping(executionId)
-      for (const [stepId, mappedSessionId] of Object.entries(mapping)) {
-        if (mappedSessionId === sessionId) {
+      const execution = await this.getExecutionInternal(executionId)
+      if (!execution) continue
+
+      for (const [stepId, step] of Object.entries(execution.steps)) {
+        if (step.sessionId === sessionId) {
           results.push({ executionId, stepId })
         }
       }
@@ -630,22 +585,20 @@ export class DefaultStateManager implements StateManager {
     return results
   }
 
-  // Checkpoint & Recovery
+  // Checkpoint (execution.json IS the checkpoint)
   async saveCheckpoint(executionId: string): Promise<string> {
     this.assertInitialized()
-    return this.lockManager.withLock(executionId, () => this.saveCheckpointInternal(executionId))
+    // execution.json IS the checkpoint - just flush cache to disk
+    const execution = this.executionCache.get(executionId)
+    if (execution) {
+      await writeJsonFile(this.getExecutionPath(executionId), execution)
+    }
+    return this.getExecutionPath(executionId)
   }
 
-  async loadCheckpoint(executionId: string): Promise<ExecutionCheckpoint | null> {
+  async loadCheckpoint(executionId: string): Promise<Execution | null> {
     this.assertInitialized()
-
-    const checkpoint = await readJsonFile<ExecutionCheckpoint>(this.getCheckpointPath(executionId))
-
-    if (!checkpoint) {
-      return null
-    }
-
-    return checkpoint
+    return this.getExecutionInternal(executionId)
   }
 
   async listIncompleteExecutions(): Promise<IncompleteExecution[]> {
@@ -655,24 +608,23 @@ export class DefaultStateManager implements StateManager {
     const incomplete: IncompleteExecution[] = []
 
     for (const executionId of executionIds) {
-      const execution = await this.getExecution(executionId)
+      const execution = await this.getExecutionInternal(executionId)
       if (!execution) continue
 
+      // Only include active (non-terminal) executions
       if (!isActiveStatus(execution.status)) continue
 
-      const completedSteps = Object.entries(execution.stepStatuses)
-        .filter(([, status]) => status === StepExecutionStatus.COMPLETED)
+      const completedSteps = Object.entries(execution.steps)
+        .filter(([, step]) => step.status === StepExecutionStatus.COMPLETED)
         .map(([stepId]) => stepId)
 
-      const hasCheckpointFile = await this.hasCheckpoint(executionId)
-
       incomplete.push({
-        executionId,
+        executionId: execution.id,
         workflowName: execution.workflowName,
         status: execution.status,
         completedSteps,
         lastUpdated: execution.updatedAt,
-        isRecoverable: hasCheckpointFile,
+        isRecoverable: execution.recoverable,
       })
     }
 
@@ -681,25 +633,26 @@ export class DefaultStateManager implements StateManager {
 
   async setRecoverable(executionId: string, recoverable: boolean): Promise<void> {
     await this.withExecutionLock(executionId, async () => {
-      if (recoverable) {
-        await this.saveCheckpointInternal(executionId)
-      } else {
-        const checkpointPath = this.getCheckpointPath(executionId)
-        try {
-          await fs.unlink(checkpointPath)
-        } catch (error: unknown) {
-          if (isNodeError(error) && error.code !== "ENOENT") {
-            throw error
-          }
-        }
+      const execution = await this.getExecutionInternal(executionId)
+      if (!execution) {
+        throw new NotFoundError("Execution", executionId)
       }
-      return undefined
+
+      const updated: Execution = {
+        ...execution,
+        updatedAt: new Date().toISOString(),
+        recoverable,
+      }
+
+      await writeJsonFile(this.getExecutionPath(executionId), updated)
+      this.setCached(executionId, updated)
     })
   }
 
   async hasCheckpoint(executionId: string): Promise<boolean> {
     this.assertInitialized()
-    return fileExists(this.getCheckpointPath(executionId))
+    const execution = await this.getExecutionInternal(executionId)
+    return execution?.recoverable ?? false
   }
 
   isExecutionActive(executionId: string): boolean {
@@ -738,10 +691,12 @@ export class DefaultStateManager implements StateManager {
     try {
       const messages = await Session.messages({ sessionID: sessionId })
 
-      return messages.map((msg) => ({
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return messages.map((msg: any) => ({
         id: msg.info.id,
         role: msg.info.role as "user" | "assistant",
-        parts: msg.parts.map((part) => ({
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        parts: msg.parts.map((part: any) => ({
           type: part.type as "text" | "tool_use" | "tool_result",
           content: "text" in part ? part.text : undefined,
         })),
@@ -757,7 +712,8 @@ export class DefaultStateManager implements StateManager {
 
     try {
       const children = await Session.children(sessionId)
-      return children.map((session) => this.mapSession(session))
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return children.map((session: any) => this.mapSession(session))
     } catch {
       return []
     }
@@ -770,8 +726,6 @@ export class DefaultStateManager implements StateManager {
 export type CreateStateManagerOptions = {
   /** Directory for execution data (default: '.flomaster/executions') */
   readonly executionsDir?: string
-  /** Whether to checkpoint after each step completion */
-  readonly checkpointOnStepComplete?: boolean
 }
 
 /**
@@ -794,9 +748,6 @@ export type CreateStateManagerOptions = {
 export async function createStateManager(options?: CreateStateManagerOptions): Promise<StateManager> {
   const stateManager = new DefaultStateManager({
     ...(options?.executionsDir !== undefined && { executionsDir: options.executionsDir }),
-    ...(options?.checkpointOnStepComplete !== undefined && {
-      checkpointOnStepComplete: options.checkpointOnStepComplete,
-    }),
   })
   await stateManager.initialize()
   return stateManager

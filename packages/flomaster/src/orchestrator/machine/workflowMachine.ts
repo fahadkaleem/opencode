@@ -5,23 +5,19 @@
  * Orchestrates the execution of workflow steps in topological order.
  */
 
-import { assign, fromPromise, setup } from "xstate"
+import { fromPromise, setup } from "xstate"
 import { executeStep } from "../actors/stepActor.js"
-import { getNextRunnableSteps } from "../parser/workflowParser.js"
 import type {
-  AgentConfig,
   ExecuteStepInput,
   ExecuteStepOutput,
-  LoopState,
   ParsedStep,
   ParsedWorkflow,
-  StepResult,
   WorkflowActorInput,
   WorkflowContext,
   WorkflowMachineEvent,
 } from "../types.js"
-import { generateExecutionId } from "../utils/idGenerator.js"
-import { hasOutputComplete } from "./guards.js"
+import { actions } from "./actions.js"
+import { guards } from "./guards.js"
 
 /**
  * XState actor for step execution.
@@ -40,202 +36,8 @@ export const workflowMachine = setup({
   actors: {
     executeStep: executeStepActor,
   },
-  guards: {
-    hasNextStep: ({ context }) => context.pendingSteps.length > 0,
-    hasCurrentStep: ({ context }) => context.currentStep !== null && context.currentStepData !== null,
-    hasGraph: ({ context }) => context.graph !== null,
-    isConditionalStep: ({ context }) => context.currentStepData?.type === "ConditionalRouter",
-    isLoopStep: ({ context }) => context.currentStepData?.type === "Loop",
-    isLoopContinue: ({ context, event }) => {
-      if (context.currentStep == null) return false
-      if (!hasOutputComplete(event)) return false
-      return event.output.complete === false
-    },
-    canRetry: ({ context }) => {
-      // Get maxRetries from current step config, fall back to workflow default
-      const stepConfig = context.currentStepData?.config
-      const stepMaxRetries = stepConfig?.type === "Agent" ? (stepConfig.config as AgentConfig).maxRetries : undefined
-      const maxRetries = stepMaxRetries ?? context.maxRetries
-
-      return context.retryCount < maxRetries
-    },
-    isStepComplete: ({ event }) => {
-      if (!hasOutputComplete(event)) return false
-      return event.output.complete === true
-    },
-  },
-  actions: {
-    initializeWorkflow: assign(({ context, event }) => {
-      const e = event as {
-        type: "START"
-        graph: ParsedWorkflow
-        taskId: string
-        variables?: Record<string, unknown>
-        executionId?: string
-      }
-
-      // Check if we have previousOutputs (from resume operation)
-      // Steps with existing outputs are considered already completed
-      const previousOutputs = context.outputs ?? {}
-      const alreadyCompletedSteps = new Set<string>(Object.keys(previousOutputs))
-
-      // Determine entry points, accounting for already-completed steps
-      // If entry points are already completed, find their successors that can run
-      let initialPendingSteps: string[]
-      if (alreadyCompletedSteps.size > 0) {
-        // Resume mode: find the next runnable steps after completed ones
-        const pendingSet = new Set<string>()
-
-        // Start with entry points that aren't completed
-        for (const entryPoint of e.graph.entryPoints) {
-          if (!alreadyCompletedSteps.has(entryPoint)) {
-            pendingSet.add(entryPoint)
-          }
-        }
-
-        // For each completed step, find successors that can now run
-        for (const completedId of alreadyCompletedSteps) {
-          const successors = e.graph.adjacency.get(completedId) ?? []
-          for (const successor of successors) {
-            // Check if all predecessors of this successor are completed
-            const predecessors = e.graph.reverseAdjacency.get(successor) ?? []
-            const allPredecessorsComplete = predecessors.every((pred) => alreadyCompletedSteps.has(pred))
-            if (allPredecessorsComplete && !alreadyCompletedSteps.has(successor)) {
-              pendingSet.add(successor)
-            }
-          }
-        }
-
-        initialPendingSteps = [...pendingSet]
-      } else {
-        // Normal mode: start from entry points
-        initialPendingSteps = [...e.graph.entryPoints]
-      }
-
-      return {
-        graph: e.graph,
-        taskId: e.taskId,
-        // Use provided executionId or generate a new one
-        executionId: e.executionId ?? generateExecutionId(),
-        pendingSteps: initialPendingSteps,
-        variables: e.variables ?? {},
-        startTime: Date.now(),
-        completedSteps: alreadyCompletedSteps,
-        skippedSteps: new Set<string>(),
-        loopStates: new Map<string, LoopState>(),
-        stepResults: [],
-        error: null,
-        errorStack: null,
-        retryCount: 0,
-      }
-    }),
-    pickNextStep: assign(({ context }) => {
-      if (context.pendingSteps.length === 0) {
-        return { currentStep: null, currentStepData: null }
-      }
-      const nextStepId = context.pendingSteps[0]
-      if (nextStepId === undefined || nextStepId === "") {
-        return { currentStep: null, currentStepData: null }
-      }
-      const nextStep = context.graph?.nodes.get(nextStepId) ?? null
-      return {
-        currentStep: nextStepId,
-        currentStepData: nextStep,
-        pendingSteps: context.pendingSteps.slice(1),
-        retryCount: 0,
-      }
-    }),
-    saveStepOutput: assign(({ context, event }) => {
-      const e = event as unknown as { output: ExecuteStepOutput }
-      const { stepId, outputs, sessionID, loopState } = e.output
-
-      const newOutputs = { ...context.outputs, [stepId]: outputs }
-      const newLoopStates = new Map(context.loopStates)
-      if (loopState) {
-        newLoopStates.set(stepId, loopState)
-      }
-      const newCompleted = new Set(context.completedSteps)
-      newCompleted.add(stepId)
-
-      return {
-        outputs: newOutputs,
-        loopStates: newLoopStates,
-        completedSteps: newCompleted,
-        stepResults: [
-          ...context.stepResults,
-          {
-            stepId,
-            displayName: context.currentStepData?.displayName ?? stepId,
-            status: "COMPLETED" as const,
-            outputs,
-            ...(sessionID !== undefined && { sessionID }), // Conditional spread for UI access
-            startTime: context.startTime,
-            endTime: Date.now(),
-            duration: Date.now() - context.startTime,
-            retryCount: context.retryCount,
-          },
-        ],
-      }
-    }),
-    saveError: assign(({ context, event }) => {
-      const e = event as unknown as { error: Error }
-      const stepResult: StepResult = {
-        stepId: context.currentStep ?? "unknown",
-        displayName: context.currentStepData?.displayName ?? "unknown",
-        status: "FAILED" as const,
-        outputs: {},
-        error: e.error.message,
-        ...(e.error.stack !== undefined && { stackTrace: e.error.stack }),
-        startTime: context.startTime,
-        endTime: Date.now(),
-        duration: Date.now() - context.startTime,
-        retryCount: context.retryCount,
-      }
-      return {
-        error: e.error.message,
-        errorStack: e.error.stack ?? null,
-        stepResults: [...context.stepResults, stepResult],
-      }
-    }),
-    advanceToNextStep: assign(({ context }) => {
-      if (context.graph == null || context.currentStep == null) {
-        return { pendingSteps: [], currentStep: null, currentStepData: null }
-      }
-      const nextSteps = getNextRunnableSteps(context.currentStep, context.graph, context.completedSteps)
-      const newPending = [...context.pendingSteps, ...nextSteps.filter((s) => !context.pendingSteps.includes(s))]
-      return {
-        pendingSteps: newPending,
-        currentStep: null,
-        currentStepData: null,
-      }
-    }),
-    applyConditionalBranch: assign(({ context, event }) => {
-      if (context.graph == null || context.currentStep == null) return {}
-      const e = event as unknown as {
-        output: { branch: "true" | "false"; skipSteps?: string[] }
-      }
-      const { skipSteps = [] } = e.output
-      const successors = context.graph.adjacency.get(context.currentStep) ?? []
-      const newPending = [
-        ...context.pendingSteps,
-        ...successors.filter((s) => !context.pendingSteps.includes(s) && !skipSteps.includes(s)),
-      ]
-      const newSkipped = new Set(context.skippedSteps)
-      for (const stepId of skipSteps) {
-        newSkipped.add(stepId)
-      }
-      return {
-        pendingSteps: newPending,
-        skippedSteps: newSkipped,
-        currentStep: null,
-        currentStepData: null,
-      }
-    }),
-    incrementRetry: assign(({ context }) => ({
-      retryCount: context.retryCount + 1,
-    })),
-    clearError: assign(() => ({ error: null, errorStack: null })),
-  },
+  guards,
+  actions,
 }).createMachine({
   id: "workflow",
   initial: "idle",
@@ -243,6 +45,7 @@ export const workflowMachine = setup({
     graph: input.graph,
     taskId: input.taskId,
     executionId: "",
+    executionsDir: input.executionsDir,
     workflowSessionID: input.workflowSessionID,
     signal: input.signal,
     outputs: input.outputs ?? {},
@@ -287,6 +90,7 @@ export const workflowMachine = setup({
             input: ({ context }): ExecuteStepInput => ({
               step: context.currentStepData as ParsedStep,
               executionId: context.executionId,
+              executionsDir: context.executionsDir,
               workflowSessionID: context.workflowSessionID,
               signal: context.signal,
               outputs: context.outputs,

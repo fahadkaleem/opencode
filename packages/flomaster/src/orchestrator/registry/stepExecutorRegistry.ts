@@ -12,14 +12,20 @@
  * - Validation on registration
  */
 
-import type { StepEventEmitter, StepType } from "../types.js"
+import type { StepType } from "../types.js"
 import { createAgentExecutorFromDependencies, placeholderAgentExecutor } from "./executors/agentExecutor.js"
 import { conditionalExecutor } from "./executors/conditionalExecutor.js"
 import { genericExecutor, inputExecutor, outputExecutor } from "./executors/genericExecutor.js"
 import { loopExecutor } from "./executors/loopExecutor.js"
 import { promptExecutor } from "./executors/promptExecutor.js"
 import { createSubFlowExecutorFromDependencies, placeholderSubFlowExecutor } from "./executors/subflowExecutor.js"
-import type { ExecutorDependencies, ExecutorRegistryEntry, StepExecutor, StepExecutorRegistryConfig } from "./types.js"
+import type {
+  ExecutorDependencies,
+  ExecutorRegistryEntry,
+  StepEventEmitter,
+  StepExecutor,
+  StepExecutorRegistryConfig,
+} from "./types.js"
 import { isStepExecutor } from "./types.js"
 
 /**

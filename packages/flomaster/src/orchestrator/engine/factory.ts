@@ -23,8 +23,6 @@ export type CreateWorkflowEngineOptions = {
   registryConfig?: StepExecutorRegistryConfig
   /** Whether to enable state management (default: true) */
   enableStateManager?: boolean
-  /** Whether to checkpoint after each step completion (default: true) */
-  checkpointOnStepComplete?: boolean
 }
 
 /**
@@ -50,13 +48,7 @@ export type WorkflowEngineBundle = {
  * ```
  */
 export async function createWorkflowEngine(options: CreateWorkflowEngineOptions = {}): Promise<WorkflowEngineBundle> {
-  const {
-    directory,
-    engineConfig,
-    registryConfig,
-    enableStateManager = false,
-    checkpointOnStepComplete = true,
-  } = options
+  const { directory, engineConfig, registryConfig, enableStateManager = false } = options
 
   const registry = createStepExecutorRegistry(registryConfig)
   await registry.initialize({ directory })
@@ -72,20 +64,10 @@ export async function createWorkflowEngine(options: CreateWorkflowEngineOptions 
     const executionsDir = path.join(directory, FLOMASTER_DIR, EXECUTIONS_DIR)
     stateManager = await createStateManager({
       executionsDir,
-      checkpointOnStepComplete,
     })
   }
 
   return { engine, registry, stateManager }
-}
-
-/**
- * Create a workflow engine without directory (placeholder executors).
- */
-export async function createWorkflowEngineWithoutAdapter(
-  options: Omit<CreateWorkflowEngineOptions, "directory"> = {},
-): Promise<WorkflowEngineBundle> {
-  return createWorkflowEngine(options)
 }
 
 /**

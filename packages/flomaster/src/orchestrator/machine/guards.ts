@@ -109,16 +109,17 @@ export function guardIsSubFlowStep({ context }: GuardParams): boolean {
 
 /**
  * Checks if a loop should continue iterating.
+ * Uses event.output.complete from the step executor response.
  *
  * @param params - Guard parameters from XState
  * @param params.context - Current workflow context
- * @returns True if loop has more iterations remaining
+ * @param params.event - The event containing step output
+ * @returns True if output.complete is false (more iterations remain)
  */
-export function isLoopContinue({ context }: GuardParams): boolean {
+export function isLoopContinue({ context, event }: GuardParams): boolean {
   if (context.currentStep == null) return false
-  const loopState = context.loopStates.get(context.currentStep)
-  if (loopState?.initialized !== true) return false
-  return loopState.index < loopState.data.length - 1
+  if (!hasOutputComplete(event)) return false
+  return (event as { output: { complete: boolean } }).output.complete === false
 }
 
 /**

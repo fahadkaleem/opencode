@@ -6,12 +6,16 @@
  */
 
 import { fromPromise } from 'xstate';
+import { SubFlowExecutionError } from '../errors.js';
 import type {
   SubFlowConfig,
   SubFlowOutput,
   WorkflowData,
   WorkflowResult,
 } from '../types.js';
+
+// Re-export for backward compatibility
+export { SubFlowExecutionError } from '../errors.js';
 
 /**
  * Input for the subflow actor.
@@ -38,34 +42,6 @@ export type SubFlowInput = {
     inputs: Record<string, unknown>,
   ) => Promise<WorkflowResult>;
 };
-
-/**
- * Error thrown when subflow execution fails.
- */
-export class SubFlowExecutionError extends Error {
-  readonly flowId?: string;
-  readonly flowName?: string;
-  readonly originalCause?: Error;
-
-  constructor(
-    message: string,
-    flowId?: string,
-    flowName?: string,
-    originalCause?: Error,
-  ) {
-    super(message);
-    this.name = 'SubFlowExecutionError';
-    if (flowId !== undefined) {
-      this.flowId = flowId;
-    }
-    if (flowName !== undefined) {
-      this.flowName = flowName;
-    }
-    if (originalCause !== undefined) {
-      this.originalCause = originalCause;
-    }
-  }
-}
 
 /**
  * Applies tweaks to a graph.

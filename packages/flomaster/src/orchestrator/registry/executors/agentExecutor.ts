@@ -25,9 +25,16 @@ import { Agent } from "opencode/agent/agent"
 import { Provider } from "opencode/provider/provider"
 import { defer } from "opencode/util/defer"
 import type { AgentConfig, ExecuteStepOutput, ParsedStep } from "../../types.js"
+import { AgentExecutionError } from "../../errors.js"
 import type { ExecutorContext, ExecutorDependencies, ExecutorOptions, StepExecutor } from "../types.js"
+import { getExecutionLogger, type ExecutionLogger } from "../../../state/executionLogger.js"
+import { mergeStepInputs, replaceTemplateVariables } from "./executorUtils.js"
 
-const log = Log.create({ service: "AgentExecutor" })
+// Re-export for backward compatibility
+export { AgentExecutionError } from "../../errors.js"
+
+// Global logger for module-level logging (before execution context is available)
+const globalLog = Log.create({ service: "AgentExecutor" })
 
 /** Default timeout in milliseconds (5 minutes) */
 const DEFAULT_TIMEOUT_MS = 300000
@@ -57,23 +64,6 @@ function combineAbortSignals(...signals: AbortSignal[]): AbortSignal {
 }
 
 /**
- * Error thrown when agent execution fails.
- */
-export class AgentExecutionError extends Error {
-  readonly stepId: string
-  override readonly cause?: Error
-
-  constructor(message: string, stepId: string, cause?: Error) {
-    super(message)
-    this.name = "AgentExecutionError"
-    this.stepId = stepId
-    if (cause !== undefined) {
-      this.cause = cause
-    }
-  }
-}
-
-/**
  * Result from agent execution.
  */
 export type AgentExecutionResult = {
@@ -92,19 +82,10 @@ function buildAgentPrompt(config: AgentConfig, inputs: Record<string, unknown>):
   const template = (inputs["prompt"] ?? inputs["template"] ?? inputs["message"]) as string | undefined
 
   if (template !== undefined) {
-    let result = template
-    for (const [key, value] of Object.entries(inputs)) {
-      const pattern = new RegExp(`\\{\\{\\s*${escapeRegExp(key)}\\s*\\}\\}`, "g")
-      result = result.replace(pattern, String(value ?? ""))
-    }
-    return result
+    return replaceTemplateVariables(template, inputs)
   }
 
   return `Execute agent "${config.agentType}" with inputs:\n${JSON.stringify(inputs, null, 2)}`
-}
-
-function escapeRegExp(string: string): string {
-  return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 /**
@@ -222,6 +203,8 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
     },
 
     async execute(step: ParsedStep, context: ExecutorContext, options?: ExecutorOptions): Promise<ExecuteStepOutput> {
+      // Create execution-specific logger (use executionsDir for correct repo root path)
+      const log = getExecutionLogger(context.executionId, `AgentExecutor:${step.id}`, context.executionsDir)
       log.info("Starting agent execution", { stepId: step.id, stepName: step.displayName })
 
       const config = step.config
@@ -276,12 +259,7 @@ export function createAgentExecutor(_directory: string): StepExecutor<"Agent"> {
       }
 
       // Build inputs from step inputs + previous outputs
-      const stepInputs: Record<string, unknown> = { ...step.inputs }
-      for (const [stepId, stepOutputs] of Object.entries(context.outputs)) {
-        for (const [key, value] of Object.entries(stepOutputs)) {
-          stepInputs[`${stepId}.${key}`] = value
-        }
-      }
+      const stepInputs = mergeStepInputs(step, context)
 
       // Build permission rules: deny "task" + any additional tool restrictions from step config
       // This prevents infinite recursion - workflow steps cannot spawn subagents via task tool

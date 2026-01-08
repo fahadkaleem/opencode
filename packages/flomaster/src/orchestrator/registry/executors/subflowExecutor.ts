@@ -5,18 +5,9 @@
  */
 
 import { SubFlowExecutionError } from '../../actors/subflowActor.js';
-import type {
-  ExecuteStepOutput,
-  ParsedStep,
-  WorkflowData,
-  WorkflowResult,
-} from '../../types.js';
-import type {
-  ExecutorContext,
-  ExecutorDependencies,
-  ExecutorOptions,
-  StepExecutor,
-} from '../types.js';
+import type { ExecuteStepOutput, ParsedStep, WorkflowData, WorkflowResult } from '../../types.js';
+import type { ExecutorContext, ExecutorDependencies, ExecutorOptions, StepExecutor } from '../types.js';
+import { mergeStepInputs } from './executorUtils.js';
 
 /**
  * Dependencies required for SubFlow execution.
@@ -101,15 +92,9 @@ export function createSubFlowExecutor(
         };
       }
 
-      const stepInputs: Record<string, unknown> = { ...step.inputs };
-      for (const [stepId, stepOutputs] of Object.entries(context.outputs)) {
-        for (const [key, value] of Object.entries(stepOutputs)) {
-          if (!(key in stepInputs)) {
-            stepInputs[`${stepId}.${key}`] = value;
-          }
-        }
-      }
+      const stepInputs = mergeStepInputs(step, context);
 
+      // Build parent context for child workflow (no collision check needed)
       const parentContext: Record<string, unknown> = {};
       for (const [stepId, stepOutputs] of Object.entries(context.outputs)) {
         for (const [key, value] of Object.entries(stepOutputs)) {

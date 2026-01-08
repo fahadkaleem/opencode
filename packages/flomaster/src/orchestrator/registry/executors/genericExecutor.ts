@@ -5,11 +5,8 @@
  */
 
 import type { ExecuteStepOutput, ParsedStep } from '../../types.js';
-import type {
-  ExecutorContext,
-  ExecutorOptions,
-  StepExecutor,
-} from '../types.js';
+import type { ExecutorContext, ExecutorOptions, StepExecutor } from '../types.js';
+import { mergeStepInputs } from './executorUtils.js';
 
 /**
  * Generic step executor.
@@ -25,22 +22,10 @@ export const genericExecutor: StepExecutor<'Generic'> = {
     context: ExecutorContext,
     _options?: ExecutorOptions,
   ): Promise<ExecuteStepOutput> {
-    const stepInputs: Record<string, unknown> = { ...step.inputs };
-    for (const [stepId, stepOutputs] of Object.entries(context.outputs)) {
-      for (const [key, value] of Object.entries(stepOutputs)) {
-        if (!(key in stepInputs)) {
-          stepInputs[`${stepId}.${key}`] = value;
-        }
-      }
-    }
-
+    const inputs = mergeStepInputs(step, context);
     return Promise.resolve({
       stepId: step.id,
-      outputs: {
-        ...stepInputs,
-        stepId: step.id,
-        displayName: step.displayName,
-      },
+      outputs: { ...inputs, stepId: step.id, displayName: step.displayName },
       complete: true,
     });
   },
@@ -59,23 +44,10 @@ export const inputExecutor: StepExecutor<'Input'> = {
     context: ExecutorContext,
     _options?: ExecutorOptions,
   ): Promise<ExecuteStepOutput> {
-    const stepInputs: Record<string, unknown> = { ...step.inputs };
-    for (const [stepId, stepOutputs] of Object.entries(context.outputs)) {
-      for (const [key, value] of Object.entries(stepOutputs)) {
-        if (!(key in stepInputs)) {
-          stepInputs[`${stepId}.${key}`] = value;
-        }
-      }
-    }
-
-    const outputs = {
-      ...stepInputs,
-      ...context.variables,
-    };
-
+    const inputs = mergeStepInputs(step, context);
     return Promise.resolve({
       stepId: step.id,
-      outputs,
+      outputs: { ...inputs, ...context.variables },
       complete: true,
     });
   },
@@ -94,34 +66,21 @@ export const outputExecutor: StepExecutor<'Output'> = {
     context: ExecutorContext,
     _options?: ExecutorOptions,
   ): Promise<ExecuteStepOutput> {
-    const stepInputs: Record<string, unknown> = { ...step.inputs };
-    for (const [stepId, stepOutputs] of Object.entries(context.outputs)) {
-      for (const [key, value] of Object.entries(stepOutputs)) {
-        if (!(key in stepInputs)) {
-          stepInputs[`${stepId}.${key}`] = value;
-        }
-      }
-    }
-
     return Promise.resolve({
       stepId: step.id,
-      outputs: stepInputs,
+      outputs: mergeStepInputs(step, context),
       complete: true,
     });
   },
 };
 
-/**
- * Factory functions for creating the executors.
- */
-function _createGenericExecutor(): StepExecutor<'Generic'> {
-  return genericExecutor;
-}
-
-function _createInputExecutor(): StepExecutor<'Input'> {
-  return inputExecutor;
-}
-
-function _createOutputExecutor(): StepExecutor<'Output'> {
-  return outputExecutor;
-}
+// TODO(future): Factory functions for creating configurable executors
+// function _createGenericExecutor(config?: GenericExecutorConfig): StepExecutor<'Generic'> {
+//   return genericExecutor;
+// }
+// function _createInputExecutor(config?: InputExecutorConfig): StepExecutor<'Input'> {
+//   return inputExecutor;
+// }
+// function _createOutputExecutor(config?: OutputExecutorConfig): StepExecutor<'Output'> {
+//   return outputExecutor;
+// }

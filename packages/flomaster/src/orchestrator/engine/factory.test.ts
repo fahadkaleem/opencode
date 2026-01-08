@@ -5,7 +5,7 @@
 import { describe, expect, it, mock } from "bun:test"
 import { StepExecutorRegistry } from "../registry/stepExecutorRegistry.js"
 import type { StepType } from "../types.js"
-import { createInitializedRegistry, createWorkflowEngine, createWorkflowEngineWithoutAdapter } from "./factory.js"
+import { createInitializedRegistry, createWorkflowEngine } from "./factory.js"
 import { DefaultWorkflowEngine } from "./workflowEngine.js"
 
 describe("createWorkflowEngine", () => {
@@ -65,26 +65,6 @@ describe("createWorkflowEngine", () => {
     const agentExecutor = registry.get("Agent")
     expect(agentExecutor).toBeDefined()
     expect(agentExecutor?.type).toBe("Agent")
-  })
-})
-
-describe("createWorkflowEngineWithoutAdapter", () => {
-  it("should create engine with placeholder executors", async () => {
-    const { engine, registry } = await createWorkflowEngineWithoutAdapter()
-
-    expect(engine).toBeInstanceOf(DefaultWorkflowEngine)
-    expect(registry).toBeInstanceOf(StepExecutorRegistry)
-    expect(registry.isInitialized()).toBe(true)
-  })
-
-  it("should accept engine and registry config", async () => {
-    const { engine, registry } = await createWorkflowEngineWithoutAdapter({
-      engineConfig: { workflowDir: "/test" },
-      registryConfig: { debug: true },
-    })
-
-    expect(engine).toBeInstanceOf(DefaultWorkflowEngine)
-    expect(registry.isInitialized()).toBe(true)
   })
 })
 

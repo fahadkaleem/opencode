@@ -74,32 +74,78 @@ export const stepResultSchema = z.object({
   sessionId: z.string().optional(),
 })
 
-export const workflowExecutionSchema = z.object({
-  executionId: z.string().min(1).max(256),
-  workflowId: z.string().min(1).max(256).optional(),
-  workflowName: z.string().min(1).max(256),
-  taskId: z.string().max(256).optional(),
-  status: executionStatusSchema,
-  stepStatuses: z.record(z.string(), stepExecutionStatusSchema),
-  stepResults: z.record(z.string(), stepResultSchema),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-  startedAt: z.string().optional(),
-  completedAt: z.string().optional(),
-})
-
 export const sharedContextSchema = z.record(z.string(), z.record(z.string(), z.unknown()))
 
-export const executionCheckpointSchema = z.object({
-  executionId: z.string().min(1).max(256),
-  workflowName: z.string().min(1).max(256),
-  execution: workflowExecutionSchema,
-  context: sharedContextSchema,
-  sessionMappings: z.record(z.string(), z.string()),
-  timestamp: z.string(),
-  checksum: z.string(),
-  version: z.string().min(1),
+// ============================================================================
+// New Unified Execution Types (Single File Storage)
+// ============================================================================
+
+/**
+ * Unified step state - single source of truth.
+ * Contains all step data that was previously split across multiple files.
+ */
+export const executionStepSchema = z.object({
+  /** Step execution status */
+  status: stepExecutionStatusSchema,
+  /** Session ID for this step (for agent steps) */
+  sessionId: z.string().optional(),
+  /** Epoch timestamp when step started */
+  startTime: z.number().optional(),
+  /** Epoch timestamp when step completed */
+  endTime: z.number().optional(),
+  /** Step outputs - the data passed to downstream steps via {{stepId.field}} */
+  outputs: z.record(z.string(), z.unknown()).optional(),
+  /** Error message if step failed */
+  error: z.string().optional(),
+  /** History of errors for retry tracking */
+  errorHistory: z.array(stepErrorSchema).optional(),
+  /** Number of retry attempts */
+  retryCount: z.number().optional(),
 })
+
+/**
+ * Unified execution state stored in execution.json.
+ * Single source of truth for all execution data.
+ * Replaces the 4-file structure (state.json, context.json, mapping.json, checkpoint.json).
+ */
+export const executionSchema = z.object({
+  // Header (immutable after creation)
+  /** Unique execution identifier */
+  id: z.string().min(1).max(256),
+  /** Name of the workflow being executed */
+  workflowName: z.string().min(1).max(256),
+  /** Optional workflow definition ID */
+  workflowId: z.string().optional(),
+  /** Optional external task ID (Linear, Jira, etc.) */
+  taskId: z.string().optional(),
+  /** Parent session ID for the workflow */
+  workflowSessionId: z.string().optional(),
+  /** ISO 8601 creation timestamp */
+  createdAt: z.string(),
+
+  // Status (mutable)
+  /** Overall execution status */
+  status: executionStatusSchema,
+  /** ISO 8601 last update timestamp */
+  updatedAt: z.string(),
+  /** ISO 8601 start timestamp */
+  startedAt: z.string().optional(),
+  /** ISO 8601 completion timestamp */
+  completedAt: z.string().optional(),
+
+  // Steps - single source of truth for all step data
+  /** Step states keyed by step ID */
+  steps: z.record(z.string(), executionStepSchema),
+
+  // Metadata
+  /** Schema version for future migrations */
+  version: z.string(),
+  /** Whether this execution can be recovered/resumed */
+  recoverable: z.boolean(),
+})
+
+/** Current schema version for Execution */
+export const EXECUTION_SCHEMA_VERSION = "1.0"
 
 export const executionFilterSchema = z.object({
   status: z.union([executionStatusSchema, z.array(executionStatusSchema)]).optional(),
@@ -145,7 +191,6 @@ export const sessionMessageSchema = z.object({
 
 export const stateManagerConfigSchema = z.object({
   executionsDir: z.string().optional(),
-  checkpointOnStepComplete: z.boolean().optional(),
 })
 
 // ============================================================================
@@ -163,20 +208,21 @@ export type StepError = z.infer<typeof stepErrorSchema>
 export type StepResult = z.infer<typeof stepResultSchema>
 
 /**
- * Complete workflow execution state.
- */
-export type WorkflowExecution = z.infer<typeof workflowExecutionSchema>
-
-/**
  * Shared context for data passing between steps.
  * Structure: { [stepId]: { [outputKey]: value } }
  */
 export type SharedContext = z.infer<typeof sharedContextSchema>
 
 /**
- * Checkpoint for crash recovery.
+ * Unified step state - single source of truth.
  */
-export type ExecutionCheckpoint = z.infer<typeof executionCheckpointSchema>
+export type ExecutionStep = z.infer<typeof executionStepSchema>
+
+/**
+ * Unified execution state stored in execution.json.
+ * Single source of truth for all execution data.
+ */
+export type Execution = z.infer<typeof executionSchema>
 
 /**
  * Filter for listing executions.

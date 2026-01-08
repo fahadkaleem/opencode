@@ -7,11 +7,58 @@
 
 import type { ExecuteStepOutput, LoopState, ParsedStep, StepType } from "../types.js"
 
+// ============================================================================
+// Execution Event Types (defined here to avoid circular dependency)
+// Re-exported from orchestrator/types.ts for backward compatibility
+// ============================================================================
+
+/**
+ * Events that can be emitted during step execution.
+ * Used for progress tracking, tool call monitoring, and session management.
+ */
+export type StepExecutionEvent =
+  | { type: "progress"; stepId: string; content: string }
+  | { type: "tool_start"; stepId: string; toolName: string; toolArgs: unknown }
+  | { type: "tool_end"; stepId: string; toolName: string; toolResult: unknown }
+  | { type: "session_created"; stepId: string; sessionId: string; agentName: string }
+
+/**
+ * Callback for emitting step execution events.
+ */
+export type StepEventEmitter = (event: StepExecutionEvent) => void
+
+// ============================================================================
+// Registry Interface (minimal interface to avoid unknown typing)
+// ============================================================================
+
+/**
+ * Interface for the step executor registry.
+ * Used to avoid circular dependency when typing executorRegistry in other modules.
+ */
+export type StepExecutorRegistryInterface = {
+  /** Check if the registry has been initialized with executors */
+  isInitialized(): boolean
+  /** Get an executor by step type */
+  get(type: StepType): StepExecutor | undefined
+  /** Get all registered step types */
+  getRegisteredTypes(): StepType[]
+  /** Set an event emitter for a specific execution */
+  setStepEventEmitter(executionId: string, emitter: StepEventEmitter): void
+  /** Get the event emitter for a specific execution */
+  getStepEventEmitter(executionId: string): StepEventEmitter | undefined
+  /** Remove the event emitter for a specific execution */
+  removeStepEventEmitter(executionId: string): void
+}
+
 /**
  * Context available to executors during step execution.
  * Contains outputs from previous steps, variables, and execution state.
  */
 export type ExecutorContext = {
+  /** Unique identifier for this workflow execution */
+  readonly executionId: string
+  /** Absolute path to executions directory (for logs, state files) */
+  readonly executionsDir?: string
   /** Outputs from all completed steps, keyed by stepId */
   readonly outputs: Readonly<Record<string, Record<string, unknown>>>
   /** Variables for template interpolation */

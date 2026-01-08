@@ -1192,17 +1192,16 @@ function Workflow(props: ToolProps<any>) {
 
 ### Remaining Phases
 
-#### Phase 7: Auto-Switch on Step Completion (NOT STARTED)
+#### Phase 7: Auto-Switch on Step Completion (COMPLETED)
 
-**Status:** Pending
+**Commit:** `ef8e10acb` - feat(workflow): implement auto-navigation to next step session (R3)
 
-**What's needed:**
+**Implementation:** Added event handlers in `src/cli/cmd/tui/app.tsx`:
 
-- Subscribe to `workflow.step.completed` events in TUI
-- Auto-navigate to next step's session when current step completes
-- Handle edge case when workflow completes (stay on last step or go to parent)
+1. **`workflow.step.completed`** - Navigates if `nextSessionId` is already known
+2. **`workflow.step.session_created`** - Navigates when new step session is created (handles timing where session isn't created until after completion)
 
-**Implementation location:** `src/cli/cmd/tui/app.tsx` or new context
+The handler checks that the user is currently viewing a session from the same workflow execution before auto-navigating, preventing disruption if the user has manually navigated elsewhere.
 
 ---
 

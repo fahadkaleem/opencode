@@ -424,7 +424,7 @@ const stepSession = await Session.create({
 1. [x] `/workflow` command opens workflow selector dialog
 2. [x] User can select a workflow and provide input prompt
 3. [x] Workflow executes with visible progress ~~in sidebar~~ in chat (Workflow component)
-4. [ ] TUI auto-navigates between step sessions as they complete (Phase 7)
+4. [x] TUI auto-navigates between step sessions as they complete (Phase 7)
 5. [ ] User can interrupt a step and resume with `/wcontinue` (Phase 8)
 6. [x] Workflow state syncs correctly (works even if started via CLI)
 7. [x] All existing CLI functionality remains working

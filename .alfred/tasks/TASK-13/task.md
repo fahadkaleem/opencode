@@ -7,6 +7,7 @@ Integrate FloMaster workflow orchestration into the OpenCode TUI, enabling users
 ## Problem Statement
 
 Currently, FloMaster workflows are executed via a separate CLI (`flomaster workflow run`), which:
+
 - Requires switching context between TUI and CLI
 - Provides no visual integration with existing session management
 - Makes it difficult to see workflow progress alongside regular work
@@ -48,6 +49,7 @@ Currently, FloMaster workflows are executed via a separate CLI (`flomaster workf
 **R2.1** A new collapsible "Workflows" panel appears in the right sidebar (alongside MCP, LSP, Todo).
 
 **R2.2** Panel shows active workflow execution with:
+
 - Workflow name
 - Current status (running, paused, completed, failed)
 - List of steps with status indicators:
@@ -170,10 +172,12 @@ const [expanded, setExpanded] = createStore({
 ```
 
 **Data flow**:
+
 - `sync.data.*` → `createMemo()` derived data → render
 - Events update `sync` store → reactive updates propagate
 
 **Key files**:
+
 - `sidebar.tsx` - Panel rendering
 - `context/sync.tsx` - State store and event handlers
 - `context/sdk.tsx` - Event subscription (SSE)
@@ -183,11 +187,13 @@ const [expanded, setExpanded] = createStore({
 ### B. TUI Dialog System
 
 **Files**:
+
 - `packages/opencode/src/cli/cmd/tui/ui/dialog.tsx` - Dialog framework
 - `packages/opencode/src/cli/cmd/tui/ui/dialog-select.tsx` - List selection dialog
 - `packages/opencode/src/cli/cmd/tui/component/dialog-session-list.tsx` - Example
 
 **Dialog API**:
+
 ```typescript
 const dialog = useDialog()
 
@@ -202,6 +208,7 @@ dialog.setSize("large")  // 80 cols, or "medium" = 60 cols
 ```
 
 **DialogSelect component**:
+
 ```typescript
 <DialogSelect
   title="Select workflow"
@@ -220,6 +227,7 @@ dialog.setSize("large")  // 80 cols, or "medium" = 60 cols
 ```
 
 **Key patterns**:
+
 - Factory function: `dialog.replace(() => <Component />)`
 - Focus management automatic (saves/restores focus)
 - Escape closes dialog (calls `onClose` callback)
@@ -230,6 +238,7 @@ dialog.setSize("large")  // 80 cols, or "medium" = 60 cols
 ### C. Slash Command System
 
 **Files**:
+
 - `packages/opencode/src/cli/cmd/tui/component/prompt/autocomplete.tsx` - Command definitions
 - `packages/opencode/src/cli/cmd/tui/component/dialog-command.tsx` - Command registration
 
@@ -239,6 +248,7 @@ dialog.setSize("large")  // 80 cols, or "medium" = 60 cols
 2. **TUI-only** (hardcoded in `autocomplete.tsx`) - Trigger UI actions
 
 **Adding a TUI command**:
+
 ```typescript
 // In autocomplete.tsx commands memo (~line 395):
 {
@@ -259,6 +269,7 @@ command.register(() => [{
 ```
 
 **Trigger detection**:
+
 - Slash commands only trigger when `/` is typed at position 0
 - Autocomplete shows matching commands
 - On Enter, either executes TUI command or sends to server
@@ -270,6 +281,7 @@ command.register(() => [{
 **File**: `packages/opencode/src/cli/cmd/tui/context/sync.tsx`
 
 **Store structure**:
+
 ```typescript
 const [store, setStore] = createStore<{
   status: "loading" | "partial" | "complete"
@@ -283,11 +295,13 @@ const [store, setStore] = createStore<{
 ```
 
 **Event subscription** (`sdk.tsx`):
+
 - SSE connection to `/event` endpoint
 - Events batched at 16ms (60fps) for performance
 - Distributed via `emitter.emit(event.type, event)`
 
 **Event handling pattern**:
+
 ```typescript
 // In sync.tsx switch statement:
 case "todo.updated":
@@ -296,6 +310,7 @@ case "todo.updated":
 ```
 
 **Adding workflow state**:
+
 ```typescript
 // Add to store:
 workflow_executions: { [executionId: string]: Execution }
@@ -313,6 +328,7 @@ sdk.client.workflow.list().then((x) =>
 ```
 
 **Server-side publishing**:
+
 ```typescript
 // In workflowEngine.ts:
 import { Bus } from "opencode/bus/index"
@@ -326,16 +342,17 @@ Bus.publish(WorkflowEvents.ExecutionUpdated, { execution })
 
 **File**: `packages/flomaster/src/cli/workflow.ts`
 
-| Command | Lines | Purpose |
-|---------|-------|---------|
-| `workflow run` | 64-305 | Execute workflow with prompt |
-| `workflow list` | 346-465 | List executions or definitions |
-| `workflow inspect` | 470-553 | Show execution details |
-| `workflow resume` | 662-985 | Resume interrupted workflow |
-| `workflow validate` | 558-594 | Validate workflow JSON |
-| `workflow show` | 599-647 | Show workflow definition |
+| Command             | Lines   | Purpose                        |
+| ------------------- | ------- | ------------------------------ |
+| `workflow run`      | 64-305  | Execute workflow with prompt   |
+| `workflow list`     | 346-465 | List executions or definitions |
+| `workflow inspect`  | 470-553 | Show execution details         |
+| `workflow resume`   | 662-985 | Resume interrupted workflow    |
+| `workflow validate` | 558-594 | Validate workflow JSON         |
+| `workflow show`     | 599-647 | Show workflow definition       |
 
 **Key capabilities already implemented**:
+
 - Load workflow definitions from `.flomaster/workflows/`
 - Execute workflows with WorkflowEngine
 - State persistence in `.flomaster/executions/{id}/execution.json`
@@ -344,6 +361,7 @@ Bus.publish(WorkflowEvents.ExecutionUpdated, { execution })
 - Event emission during execution
 
 **State file format** (`execution.json`):
+
 ```json
 {
   "id": "exec-1234567890-abc123",
@@ -382,11 +400,13 @@ const stepSession = await Session.create({
 ```
 
 **TUI already supports**:
+
 - Child session navigation ("Next/Prev child session" keybinds)
 - Parent session shows in Sessions dialog
 - Child sessions grouped under parent
 
 **What's needed**:
+
 - Better visibility of workflow progress
 - Auto-navigation on step completion
 - Workflow-specific sidebar panel
@@ -401,13 +421,13 @@ const stepSession = await Session.create({
 
 ## Acceptance Criteria
 
-1. [ ] `/workflow` command opens workflow selector dialog
-2. [ ] User can select a workflow and provide input prompt
-3. [ ] Workflow executes with visible progress in sidebar
-4. [ ] TUI auto-navigates between step sessions as they complete
-5. [ ] User can interrupt a step and resume with `/continue`
-6. [ ] Workflow state syncs correctly (works even if started via CLI)
-7. [ ] All existing CLI functionality remains working
+1. [x] `/workflow` command opens workflow selector dialog
+2. [x] User can select a workflow and provide input prompt
+3. [x] Workflow executes with visible progress ~~in sidebar~~ in chat (Workflow component)
+4. [ ] TUI auto-navigates between step sessions as they complete (Phase 7)
+5. [ ] User can interrupt a step and resume with `/wcontinue` (Phase 8)
+6. [x] Workflow state syncs correctly (works even if started via CLI)
+7. [x] All existing CLI functionality remains working
 
 ---
 

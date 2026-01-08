@@ -1038,3 +1038,230 @@ Add `/wcontinue` command to resume paused workflow steps.
 - Sidebar pattern: `packages/opencode/src/cli/cmd/tui/routes/session/sidebar.tsx`
 - Dialog pattern: `packages/opencode/src/cli/cmd/tui/component/dialog-session-list.tsx`
 - Sync pattern: `packages/opencode/src/cli/cmd/tui/context/sync.tsx`
+
+---
+
+## Implementation Progress
+
+### Completed Phases
+
+#### Phase 0: Architecture Change - FloMaster Move (COMPLETED)
+
+**Commit:** `011ee8558` - refactor(flomaster): move flomaster package into opencode
+
+**Rationale:** The original plan kept FloMaster as a separate package (`packages/flomaster/`), but this caused circular dependency issues when trying to import OpenCode's Bus system. Moving FloMaster into OpenCode (`packages/opencode/src/flomaster/`) resolved these issues and simplified the integration.
+
+**Changes Made:**
+
+| Action          | Details                                                        |
+| --------------- | -------------------------------------------------------------- |
+| Moved           | `packages/flomaster/src/` → `packages/opencode/src/flomaster/` |
+| Updated imports | Changed `opencode/...` → `@/...` (internal imports)            |
+| Removed         | `packages/flomaster/` directory, package.json, tsconfig.json   |
+| Created         | `src/flomaster/orchestrator/events.ts` - Bus event definitions |
+| Created         | `src/flomaster/server/routes.ts` - HTTP endpoints              |
+| Created         | `src/flomaster/server/integration.ts` - Server integration     |
+
+**Key Files After Move:**
+
+```
+packages/opencode/src/flomaster/
+├── cli/                    # Standalone CLI (still works)
+├── index.ts                # Public exports
+├── orchestrator/
+│   ├── events.ts           # NEW: Bus event definitions
+│   ├── engine/
+│   │   ├── factory.ts      # Engine creation
+│   │   └── workflowEngine.ts  # Core engine (enhanced)
+│   ├── machine/            # XState v5 workflow machine
+│   ├── registry/           # Step executors
+│   └── ...
+├── server/
+│   ├── index.ts            # Server integration
+│   ├── integration.ts      # Helpers
+│   └── routes.ts           # HTTP endpoints
+└── state/
+    └── stateManager.ts     # Execution persistence
+```
+
+---
+
+#### Phase 1 & 2: Server Routes & Events (COMPLETED)
+
+**Commit:** `8bdab1e06` - feat(workflow): enhance workflow messaging and session management
+
+**Changes Made:**
+
+1. **Server routes integrated directly into OpenCode** (`src/server/workflow.ts`):
+   - `GET /workflow/definitions` - List available workflows
+   - `GET /workflow/executions` - List workflow executions
+   - `POST /workflow/run` - Start workflow execution
+
+2. **Workflow message system** (`src/server/workflow-message.ts`):
+   - Creates user message showing workflow execution request
+   - Creates assistant message with `tool: "workflow"` part
+   - Updates message in real-time as steps progress
+   - Shows workflow status similar to Task tool
+
+3. **In-memory execution tracking** with persistence via StateManager
+
+---
+
+#### Phase 3 & 4: TUI State Sync & Workflow Dialog (COMPLETED)
+
+**Commit:** `8bdab1e06` - feat(workflow): enhance workflow messaging and session management
+
+**Changes Made:**
+
+1. **Sync store** (`src/cli/cmd/tui/context/sync.tsx`):
+   - Added `workflow_definitions: WorkflowDefinition[]`
+   - Added `workflow_executions` state
+   - Bootstrap fetch from `/workflow/definitions` and `/workflow/executions`
+
+2. **Workflow dialog** (`src/cli/cmd/tui/component/dialog-workflow.tsx`):
+   - `DialogWorkflowSelect` - List available workflows
+   - `DialogWorkflowPrompt` - Enter task prompt
+   - Creates session if invoked from home screen
+   - Calls `POST /workflow/run` to start execution
+
+---
+
+#### Phase 5: Slash Command (COMPLETED)
+
+**Commit:** `8bdab1e06`
+
+**Changes Made:**
+
+- Added `/workflow` command in `autocomplete.tsx`
+- Command opens `DialogWorkflowSelect` dialog
+- Works from both home screen and within sessions
+
+---
+
+#### Phase 6: Workflow Component in Chat (COMPLETED - Alternative to Sidebar)
+
+**Commit:** `8bdab1e06` - feat(workflow): enhance workflow messaging and session management
+
+Instead of a sidebar panel, we implemented workflow visualization **in the chat itself**, similar to how the Task tool works:
+
+**Changes Made** (`src/cli/cmd/tui/routes/session/index.tsx`):
+
+```typescript
+function Workflow(props: ToolProps<any>) {
+  // Renders workflow status block in chat
+  // Shows:
+  // - Workflow name as title
+  // - Step list with status icons (✓ green, ● yellow spinner, ✗ red, ○ muted)
+  // - Spinner animation for running steps
+  // - Click to navigate to step sessions
+  // - Keybind hint for viewing steps
+}
+```
+
+**Advantages over sidebar panel:**
+
+- Workflow appears in context where it was started
+- Visual consistency with Task tool
+- No sidebar clutter for inactive workflows
+- Naturally scrolls with chat history
+
+---
+
+#### Code Review Fixes (COMPLETED)
+
+**Commit:** `abe7b6743` - refactor(workflow): improve type safety and add TODO comments
+
+**Changes Made:**
+
+1. **Fixed type safety in Workflow component**:
+   - Added `ToolStateCompleted` import from SDK
+   - Replaced `as any` cast with proper type
+
+2. **Documented currentActivity limitation**:
+   - Added TODO comment explaining it won't work until Bus subscription is implemented
+   - Step session data isn't loaded into sync unless user navigates to it
+
+3. **Documented unused exported functions** in `workflow.ts`:
+   - `updateExecutionState()`, `updateStepState()`, `getExecutionState()`
+   - Added TODO explaining these are for future pause/resume/intervention features
+
+4. **Fixed type casts in workflow-message.ts**:
+   - Replaced `as any` with proper type narrowing using `"input" in existingState`
+
+---
+
+### Remaining Phases
+
+#### Phase 7: Auto-Switch on Step Completion (NOT STARTED)
+
+**Status:** Pending
+
+**What's needed:**
+
+- Subscribe to `workflow.step.completed` events in TUI
+- Auto-navigate to next step's session when current step completes
+- Handle edge case when workflow completes (stay on last step or go to parent)
+
+**Implementation location:** `src/cli/cmd/tui/app.tsx` or new context
+
+---
+
+#### Phase 8: Continue Command (NOT STARTED)
+
+**Status:** Pending
+
+**What's needed:**
+
+- Add `/wcontinue` slash command
+- Inject continue prompt into current step session
+- Handle case when not in a workflow step session
+
+**Implementation location:**
+
+- `src/cli/cmd/tui/component/prompt/autocomplete.tsx` - Add command
+- `src/cli/cmd/tui/app.tsx` - Register handler
+
+---
+
+### Known Issues & Technical Debt
+
+| Issue                        | Priority | Description                                                          |
+| ---------------------------- | -------- | -------------------------------------------------------------------- |
+| currentActivity doesn't work | Medium   | Needs Bus subscription to load step session data                     |
+| Duplicate state management   | Low      | Both `activeExecutions` Map and StateManager track state             |
+| Large POST handler           | Low      | `/workflow/run` handler is ~230 lines, could be extracted            |
+| Type duplication             | Low      | `ExecutionState` and `WorkflowStep` types defined in multiple places |
+
+---
+
+### Verification Checklist
+
+#### Completed
+
+- [x] TypeScript compiles: `bun turbo typecheck`
+- [x] OpenCode tests pass: `bun test` (1019 tests)
+- [x] FloMaster tests pass: `bun test src/flomaster` (463 tests)
+- [x] `/workflow` command shows in autocomplete
+- [x] Workflow dialog opens and lists workflows
+- [x] Workflow execution creates messages in chat
+- [x] Workflow steps show with status indicators
+
+#### Pending Manual Testing
+
+- [ ] Full workflow execution from TUI (run sdlc workflow)
+- [ ] Step navigation via clicking in Workflow component
+- [ ] Auto-switch between step sessions (Phase 7)
+- [ ] `/wcontinue` command (Phase 8)
+- [ ] Interrupt with `esc` and resume
+
+---
+
+### Commits Summary
+
+| Commit      | Description                                                       |
+| ----------- | ----------------------------------------------------------------- |
+| `011ee8558` | refactor(flomaster): move flomaster package into opencode         |
+| `3ca47fb0d` | docs: add TUI Integration roadmap aligned with TASK-13            |
+| `a65f0620b` | docs: initialize FloMaster TUI Integration milestone              |
+| `8bdab1e06` | feat(workflow): enhance workflow messaging and session management |
+| `abe7b6743` | refactor(workflow): improve type safety and add TODO comments     |

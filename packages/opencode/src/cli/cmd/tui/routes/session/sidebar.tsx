@@ -31,18 +31,12 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
 
   const route = useRoute()
 
-  // Workflow executions - show running, paused, and recently completed (within last hour)
+  // Workflow executions - show workflows that were started from this session
   const workflowExecutions = createMemo(() => {
-    const oneHourAgo = Date.now() - 60 * 60 * 1000
     return Object.values(sync.data.workflow_executions)
       .filter((e: WorkflowExecution) => {
-        // Always show running or paused
-        if (e.status === "RUNNING" || e.status === "PAUSED") return true
-        // Show completed/failed within last hour
-        if (e.status === "COMPLETED" || e.status === "FAILED") {
-          return new Date(e.updatedAt).getTime() > oneHourAgo
-        }
-        return false
+        // Only show workflows that were started from this session
+        return e.parentSessionId === props.sessionID
       })
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
   })

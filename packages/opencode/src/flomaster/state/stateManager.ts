@@ -86,7 +86,13 @@ export type StateManager = {
   isInitialized(): boolean
 
   // Execution State - returns Execution type
-  createExecution(executionId: string, workflowName: string, workflowId?: string, taskId?: string): Promise<Execution>
+  createExecution(
+    executionId: string,
+    workflowName: string,
+    workflowId?: string,
+    taskId?: string,
+    workflowSessionId?: string,
+  ): Promise<Execution>
   getExecution(executionId: string): Promise<Execution | null>
   updateStepStatus(executionId: string, stepId: string, status: StepExecutionStatus): Promise<void>
   recordStepResult(executionId: string, stepId: string, result: StepResult): Promise<void>
@@ -232,6 +238,7 @@ export class DefaultStateManager implements StateManager {
     workflowName: string,
     workflowId?: string,
     taskId?: string,
+    workflowSessionId?: string,
   ): Promise<Execution> {
     this.assertInitialized()
 
@@ -248,6 +255,7 @@ export class DefaultStateManager implements StateManager {
         workflowName,
         workflowId,
         taskId,
+        workflowSessionId,
         createdAt: now,
         status: ExecutionStatus.CREATED,
         updatedAt: now,

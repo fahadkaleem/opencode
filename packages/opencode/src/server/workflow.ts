@@ -18,9 +18,28 @@ import {
   loadWorkflow,
   ensureWorkflowsInitialized,
 } from "../flomaster/orchestrator/loader/workflowLoader"
-import type { WorkflowData } from "../flomaster/orchestrator/types"
+import { DefaultStateManager, type StateManager } from "../flomaster/state/stateManager"
+import { ExecutionStatus, StepExecutionStatus, type Execution } from "../flomaster/state/types"
+import type { WorkflowData, StepData, WorkflowEvent } from "../flomaster/orchestrator/types"
+import { Session } from "../session"
 
 const log = Log.create({ service: "workflow" })
+
+// Singleton StateManager instance (lazily initialized)
+let stateManagerInstance: StateManager | null = null
+
+/**
+ * Get or create StateManager singleton
+ */
+async function getStateManager(worktree: string): Promise<StateManager> {
+  if (!stateManagerInstance) {
+    stateManagerInstance = new DefaultStateManager({
+      executionsDir: join(worktree, ".flomaster", "executions"),
+    })
+    await stateManagerInstance.initialize()
+  }
+  return stateManagerInstance
+}
 
 // In-memory store for active workflow executions (persists during server lifetime)
 type ExecutionState = {
@@ -74,6 +93,115 @@ export function updateStepState(
  */
 export function getExecutionState(executionId: string): ExecutionState | undefined {
   return activeExecutions.get(executionId)
+}
+
+/**
+ * Get parent session ID for an execution.
+ * First tries workflowSessionId from execution, then falls back to querying
+ * the first step session's parentID.
+ */
+async function getParentSessionId(execution: Execution): Promise<string | undefined> {
+  // If workflowSessionId is stored, use it
+  if (execution.workflowSessionId) {
+    return execution.workflowSessionId
+  }
+
+  // Fallback: find first step with a sessionId and get its parentID
+  for (const step of Object.values(execution.steps)) {
+    if (step.sessionId) {
+      try {
+        const session = await Session.get(step.sessionId)
+        if (session?.parentID) {
+          return session.parentID
+        }
+      } catch {
+        // Session may not exist, continue to next
+      }
+    }
+  }
+
+  return undefined
+}
+
+/**
+ * Transform StateManager Execution to TUI ExecutionState format
+ * Looks up displayNames from workflow definition (source of truth for UI labels)
+ */
+async function transformExecution(
+  execution: Execution,
+  workflowNodes: readonly StepData[] | null,
+): Promise<ExecutionState> {
+  // Build stepId → displayName map from workflow definition
+  const displayNameMap = new Map<string, string>()
+  if (workflowNodes) {
+    for (const node of workflowNodes) {
+      displayNameMap.set(node.id, node.data.node.displayName || node.id)
+    }
+  }
+
+  // Get step order from workflow definition (for consistent ordering)
+  // Always use workflow definition if available, fall back to execution steps
+  const stepOrder = workflowNodes
+    ? workflowNodes
+        .filter((n) => {
+          const baseClasses = n.data.node.baseClasses
+          return baseClasses.includes("Agent") || baseClasses.includes("Prompt")
+        })
+        .map((n) => n.id)
+    : Object.keys(execution.steps)
+
+  // Transform steps Record → Array in definition order
+  // Include ALL steps from workflow definition, using execution data if available
+  const steps: ExecutionState["steps"] = stepOrder.map((stepId) => {
+    const step = execution.steps[stepId]
+    return {
+      stepId,
+      displayName: displayNameMap.get(stepId) ?? stepId,
+      status: step ? mapStepStatus(step.status) : "PENDING",
+      sessionId: step?.sessionId,
+    }
+  })
+
+  // Find current step (first running, or last non-pending)
+  const currentStepId =
+    steps.find((s) => s.status === "RUNNING")?.stepId ?? steps.filter((s) => s.status !== "PENDING").at(-1)?.stepId
+
+  // Get parent session ID (with fallback to derive from step sessions)
+  const parentSessionId = await getParentSessionId(execution)
+
+  return {
+    id: execution.id,
+    workflowName: execution.workflowName,
+    status: execution.status,
+    parentSessionId,
+    steps,
+    currentStepId,
+    createdAt: execution.createdAt,
+    updatedAt: execution.updatedAt,
+  }
+}
+
+/**
+ * Map StateManager step status to TUI step status
+ */
+function mapStepStatus(status: string): ExecutionState["steps"][0]["status"] {
+  switch (status) {
+    case "PENDING":
+      return "PENDING"
+    case "RUNNING":
+      return "RUNNING"
+    case "COMPLETED":
+      return "COMPLETED"
+    case "FAILED":
+      return "FAILED"
+    case "SKIPPED":
+      return "SKIPPED"
+    case "WAITING_APPROVAL":
+    case "WAITING_INPUT":
+      return "PENDING" // Map waiting states to pending for TUI
+    default:
+      return "PENDING"
+  }
 }
 
 // Response schemas for OpenAPI
@@ -152,7 +280,7 @@ export const WorkflowRoute = new Hono()
     "/workflow/executions",
     describeRoute({
       summary: "List workflow executions",
-      description: "List workflow executions",
+      description: "List workflow executions from persistent storage",
       operationId: "workflow.executions.list",
       responses: {
         200: {
@@ -166,8 +294,43 @@ export const WorkflowRoute = new Hono()
       },
     }),
     async (c) => {
-      // Return active executions from in-memory store
-      return c.json({ data: Array.from(activeExecutions.values()) })
+      const worktree = Instance.worktree
+
+      try {
+        // Get StateManager instance
+        const stateManager = await getStateManager(worktree)
+
+        // List all executions from persistent storage
+        const summaries = await stateManager.listExecutions({ limit: 100 })
+
+        // Transform each execution to TUI format
+        const executions: ExecutionState[] = []
+        for (const summary of summaries) {
+          // Get full execution details
+          const execution = await stateManager.getExecution(summary.executionId)
+          if (!execution) continue
+
+          // Load workflow definition for displayNames (gracefully handle missing)
+          let workflowNodes: readonly StepData[] | null = null
+          try {
+            const workflowConfig = loadWorkflow(worktree, execution.workflowName)
+            workflowNodes = workflowConfig.workflow.nodes
+          } catch {
+            // Workflow definition may have been deleted - use fallback
+            log.warn("Workflow definition not found", { workflowName: execution.workflowName })
+          }
+
+          executions.push(await transformExecution(execution, workflowNodes))
+        }
+
+        return c.json({ data: executions })
+      } catch (error) {
+        log.error("Failed to list executions", {
+          error: error instanceof Error ? error.message : String(error),
+        })
+        // Fallback to in-memory store if StateManager fails
+        return c.json({ data: Array.from(activeExecutions.values()) })
+      }
     },
   )
   .post(
@@ -247,14 +410,75 @@ export const WorkflowRoute = new Hono()
       }
       activeExecutions.set(executionId, initialExecution)
 
-      // Create workflow engine
-      const { engine } = await createWorkflowEngine({
+      // Create workflow engine with StateManager for persistence
+      const { engine, stateManager } = await createWorkflowEngine({
         directory: worktree,
         enableStateManager: true,
       })
 
+      // Persist execution to StateManager with workflowSessionId for sidebar association
+      if (stateManager) {
+        await stateManager
+          .createExecution(executionId, workflowName, undefined, undefined, sessionID)
+          .catch((error) => {
+            log.warn("Failed to persist execution to StateManager", {
+              executionId,
+              error: error instanceof Error ? error.message : String(error),
+            })
+          })
+      }
+
       // Set the prompt input
       const workflowWithInput = createWorkflowWithInput(workflowConfig.workflow, workflowConfig.inputNodeId, prompt)
+
+      // Track step start times for duration calculation
+      const stepStartTimes = new Map<string, number>()
+
+      // Subscribe to engine events to persist step state
+      if (stateManager) {
+        engine.subscribe((event: WorkflowEvent) => {
+          switch (event.type) {
+            case "STEP_STARTED":
+              stepStartTimes.set(event.stepId, Date.now())
+              stateManager.updateStepStatus(executionId, event.stepId, StepExecutionStatus.RUNNING).catch(() => {})
+              break
+
+            case "STEP_COMPLETED":
+              stateManager
+                .recordStepResult(executionId, event.stepId, {
+                  status: StepExecutionStatus.COMPLETED,
+                  outputs: event.outputs,
+                  startTime: stepStartTimes.get(event.stepId) ?? Date.now(),
+                  endTime: Date.now(),
+                })
+                .catch(() => {})
+              break
+
+            case "STEP_FAILED":
+              stateManager
+                .recordStepResult(executionId, event.stepId, {
+                  status: StepExecutionStatus.FAILED,
+                  error: event.error,
+                  startTime: stepStartTimes.get(event.stepId) ?? Date.now(),
+                  endTime: Date.now(),
+                })
+                .catch(() => {})
+              break
+
+            case "STEP_SESSION_CREATED":
+              stateManager.mapStepToSession(executionId, event.stepId, event.sessionID).catch(() => {})
+              break
+
+            case "WORKFLOW_COMPLETED":
+              stateManager.updateExecutionStatus(executionId, ExecutionStatus.COMPLETED).catch(() => {})
+              break
+
+            case "WORKFLOW_FAILED":
+              stateManager.updateExecutionStatus(executionId, ExecutionStatus.FAILED).catch(() => {})
+              break
+          }
+        })
+      }
 
       // Execute workflow asynchronously (don't await - let it run in background)
       // Events will be published via Bus and picked up by TUI

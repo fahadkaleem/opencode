@@ -59,10 +59,23 @@ function DialogWorkflowPrompt(props: { workflowName: string }) {
     if (!currentPrompt || submitting()) return
     setSubmitting(true)
 
-    // Get current sessionID if we're in a session (to use as parent for workflow steps)
-    const currentSessionID = route.data.type === "session" ? route.data.sessionID : undefined
-
     try {
+      // Get or create session for workflow
+      // If on home screen, create a new session first
+      let sessionID: string
+      if (route.data.type === "session") {
+        sessionID = route.data.sessionID
+      } else {
+        // Create a new session for the workflow
+        const newSession = await sdk.client.session.create({})
+        if (!newSession.data?.id) {
+          throw new Error("Failed to create session for workflow")
+        }
+        sessionID = newSession.data.id
+        // Navigate to the new session
+        route.navigate({ type: "session", sessionID })
+      }
+
       // Call server to start workflow
       const response = await fetch(`${sdk.url}/workflow/run`, {
         method: "POST",
@@ -70,7 +83,7 @@ function DialogWorkflowPrompt(props: { workflowName: string }) {
         body: JSON.stringify({
           workflowName: props.workflowName,
           prompt: currentPrompt,
-          sessionID: currentSessionID,
+          sessionID,
         }),
       })
 
@@ -81,7 +94,6 @@ function DialogWorkflowPrompt(props: { workflowName: string }) {
 
       dialog.clear()
       toast.show({ message: `Starting workflow: ${props.workflowName}`, variant: "info" })
-      // Navigation to workflow session will happen via Bus event
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "Failed to start workflow")
       setSubmitting(false)

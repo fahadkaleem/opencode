@@ -22,6 +22,14 @@ import { DefaultStateManager, type StateManager } from "../flomaster/state/state
 import { ExecutionStatus, StepExecutionStatus, type Execution } from "../flomaster/state/types"
 import type { WorkflowData, StepData, WorkflowEvent } from "../flomaster/orchestrator/types"
 import { Session } from "../session"
+import { MessageV2 } from "../session/message-v2"
+import { Bus } from "../bus"
+import {
+  createWorkflowMessage,
+  updateWorkflowMessage,
+  type WorkflowMessageState,
+  type WorkflowStep,
+} from "./workflow-message"
 
 const log = Log.create({ service: "workflow" })
 
@@ -434,16 +442,64 @@ export const WorkflowRoute = new Hono()
       // Track step start times for duration calculation
       const stepStartTimes = new Map<string, number>()
 
-      // Subscribe to engine events to persist step state
-      if (stateManager) {
-        engine.subscribe((event: WorkflowEvent) => {
-          switch (event.type) {
-            case "STEP_STARTED":
-              stepStartTimes.set(event.stepId, Date.now())
-              stateManager.updateStepStatus(executionId, event.stepId, StepExecutionStatus.RUNNING).catch(() => {})
-              break
+      // Track workflow message state for updates
+      let workflowMessageState: WorkflowMessageState | null = null
 
-            case "STEP_COMPLETED":
+      // Create workflow message in chat if we have a session
+      if (sessionID) {
+        try {
+          workflowMessageState = await createWorkflowMessage(
+            sessionID,
+            executionId,
+            workflowName,
+            prompt,
+            initialExecution.steps,
+          )
+        } catch (error) {
+          log.warn("Failed to create workflow message", {
+            executionId,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      }
+
+      // Helper to get current steps with updated statuses
+      const getCurrentSteps = (): WorkflowStep[] => {
+        const exec = activeExecutions.get(executionId)
+        return exec?.steps ?? initialExecution.steps
+      }
+
+      // Helper to update step status in memory and message
+      const updateStepInMemory = (stepId: string, status: WorkflowStep["status"], sessionId?: string) => {
+        const exec = activeExecutions.get(executionId)
+        if (exec) {
+          const step = exec.steps.find((s) => s.stepId === stepId)
+          if (step) {
+            step.status = status
+            if (sessionId) step.sessionId = sessionId
+          }
+          exec.updatedAt = new Date().toISOString()
+        }
+      }
+
+      // Subscribe to engine events to persist step state and update chat message
+      engine.subscribe((event: WorkflowEvent) => {
+        switch (event.type) {
+          case "STEP_STARTED":
+            stepStartTimes.set(event.stepId, Date.now())
+            updateStepInMemory(event.stepId, "RUNNING")
+            if (stateManager) {
+              stateManager.updateStepStatus(executionId, event.stepId, StepExecutionStatus.RUNNING).catch(() => {})
+            }
+            // Update workflow message
+            if (workflowMessageState) {
+              updateWorkflowMessage(workflowMessageState, "RUNNING", getCurrentSteps(), event.stepId).catch(() => {})
+            }
+            break
+
+          case "STEP_COMPLETED":
+            updateStepInMemory(event.stepId, "COMPLETED")
+            if (stateManager) {
               stateManager
                 .recordStepResult(executionId, event.stepId, {
                   status: StepExecutionStatus.COMPLETED,
@@ -452,9 +508,16 @@ export const WorkflowRoute = new Hono()
                   endTime: Date.now(),
                 })
                 .catch(() => {})
-              break
+            }
+            // Update workflow message
+            if (workflowMessageState) {
+              updateWorkflowMessage(workflowMessageState, "RUNNING", getCurrentSteps()).catch(() => {})
+            }
+            break
 
-            case "STEP_FAILED":
+          case "STEP_FAILED":
+            updateStepInMemory(event.stepId, "FAILED")
+            if (stateManager) {
               stateManager
                 .recordStepResult(executionId, event.stepId, {
                   status: StepExecutionStatus.FAILED,
@@ -463,22 +526,41 @@ export const WorkflowRoute = new Hono()
                   endTime: Date.now(),
                 })
                 .catch(() => {})
-              break
+            }
+            break
 
-            case "STEP_SESSION_CREATED":
+          case "STEP_SESSION_CREATED":
+            updateStepInMemory(event.stepId, "RUNNING", event.sessionID)
+            if (stateManager) {
               stateManager.mapStepToSession(executionId, event.stepId, event.sessionID).catch(() => {})
-              break
+            }
+            // Update workflow message with session ID
+            if (workflowMessageState) {
+              updateWorkflowMessage(workflowMessageState, "RUNNING", getCurrentSteps(), event.stepId).catch(() => {})
+            }
+            break
 
-            case "WORKFLOW_COMPLETED":
+          case "WORKFLOW_COMPLETED":
+            if (stateManager) {
               stateManager.updateExecutionStatus(executionId, ExecutionStatus.COMPLETED).catch(() => {})
-              break
+            }
+            // Update workflow message to completed
+            if (workflowMessageState) {
+              updateWorkflowMessage(workflowMessageState, "COMPLETED", getCurrentSteps()).catch(() => {})
+            }
+            break
 
-            case "WORKFLOW_FAILED":
+          case "WORKFLOW_FAILED":
+            if (stateManager) {
               stateManager.updateExecutionStatus(executionId, ExecutionStatus.FAILED).catch(() => {})
-              break
-          }
-        })
-      }
+            }
+            // Update workflow message to failed
+            if (workflowMessageState) {
+              updateWorkflowMessage(workflowMessageState, "FAILED", getCurrentSteps()).catch(() => {})
+            }
+            break
+        }
+      })
 
       // Execute workflow asynchronously (don't await - let it run in background)
       // Events will be published via Bus and picked up by TUI
@@ -509,6 +591,10 @@ export const WorkflowRoute = new Hono()
           if (exec) {
             exec.status = "FAILED"
             exec.updatedAt = new Date().toISOString()
+          }
+          // Update workflow message to failed
+          if (workflowMessageState) {
+            updateWorkflowMessage(workflowMessageState, "FAILED", getCurrentSteps()).catch(() => {})
           }
         })
 

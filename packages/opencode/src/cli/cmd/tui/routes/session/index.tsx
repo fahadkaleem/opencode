@@ -44,6 +44,7 @@ import type { WebFetchTool } from "@/tool/webfetch"
 import type { TaskTool } from "@/tool/task"
 import type { QuestionTool } from "@/tool/question"
 import { useKeyboard, useRenderer, useTerminalDimensions, type JSX } from "@opentui/solid"
+import "opentui-spinner/solid"
 import { useSDK } from "@tui/context/sdk"
 import { useCommandDialog } from "@tui/component/dialog-command"
 import { useKeybind } from "@tui/context/keybind"
@@ -1397,6 +1398,9 @@ function ToolPart(props: { last: boolean; part: ToolPart; message: AssistantMess
         <Match when={props.part.tool === "task"}>
           <Task {...toolprops} />
         </Match>
+        <Match when={props.part.tool === "workflow"}>
+          <Workflow {...toolprops} />
+        </Match>
         <Match when={props.part.tool === "patch"}>
           <Patch {...toolprops} />
         </Match>
@@ -1749,6 +1753,172 @@ function Task(props: ToolProps<typeof TaskTool>) {
         </InlineTool>
       </Match>
     </Switch>
+  )
+}
+
+type WorkflowToolInput = {
+  workflowName?: string
+  executionId?: string
+}
+
+type WorkflowToolMetadata = {
+  workflowName?: string
+  executionId?: string
+  status?: "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED"
+  steps?: Array<{
+    stepId: string
+    displayName: string
+    status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED"
+    sessionId?: string
+  }>
+  currentStepId?: string
+}
+
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+function Workflow(props: ToolProps<any>) {
+  const { theme } = useTheme()
+  const keybind = useKeybind()
+  const { navigate } = useRoute()
+  const sync = useSync()
+  const kv = useKV()
+
+  const input = props.input as WorkflowToolInput
+  const metadata = props.metadata as WorkflowToolMetadata
+
+  const workflowName = metadata?.workflowName ?? input?.workflowName ?? "workflow"
+  const steps = metadata?.steps ?? []
+  const status = metadata?.status ?? "RUNNING"
+
+  // Find current running step for navigation
+  const currentStep = createMemo(() => steps.find((s) => s.status === "RUNNING"))
+
+  // Get current tool activity from running step's session
+  const currentActivity = createMemo(() => {
+    const runningStep = currentStep()
+    if (!runningStep?.sessionId) return null
+
+    // Get messages for the step session
+    const messages = sync.data.message[runningStep.sessionId] ?? []
+    const lastAssistant = messages.findLast((m) => m.role === "assistant")
+    if (!lastAssistant) return null
+
+    // Get parts for that message
+    const parts = sync.data.part[lastAssistant.id] ?? []
+    // Find the last tool part that's running or recently completed
+    const toolParts = parts.filter((p): p is ToolPart => p.type === "tool")
+    const currentTool = toolParts.findLast((p) => p.state.status === "running" || p.state.status === "completed")
+
+    if (!currentTool) return null
+
+    return {
+      tool: currentTool.tool,
+      status: currentTool.state.status,
+      title: currentTool.state.status === "completed" ? (currentTool.state as any).title : undefined,
+    }
+  })
+
+  const statusIcon = createMemo(() => {
+    switch (status) {
+      case "COMPLETED":
+        return "✓"
+      case "FAILED":
+        return "✗"
+      case "CANCELLED":
+        return "○"
+      default:
+        return "●"
+    }
+  })
+
+  const statusColor = createMemo(() => {
+    switch (status) {
+      case "COMPLETED":
+        return theme.success
+      case "FAILED":
+        return theme.error
+      case "CANCELLED":
+        return theme.textMuted
+      default:
+        return theme.warning
+    }
+  })
+
+  const getStepColor = (stepStatus: string) => {
+    switch (stepStatus) {
+      case "COMPLETED":
+        return theme.success
+      case "RUNNING":
+        return theme.warning
+      case "FAILED":
+        return theme.error
+      default:
+        return theme.textMuted
+    }
+  }
+
+  const animationsEnabled = kv.get("animations_enabled", true)
+
+  return (
+    <BlockTool
+      title={`# Workflow: ${workflowName}`}
+      onClick={
+        currentStep()?.sessionId ? () => navigate({ type: "session", sessionID: currentStep()!.sessionId! }) : undefined
+      }
+      part={props.part}
+    >
+      <box>
+        <For each={steps}>
+          {(step) => (
+            <box
+              flexDirection="column"
+              onMouseUp={() => {
+                if (step.sessionId) {
+                  navigate({ type: "session", sessionID: step.sessionId })
+                }
+              }}
+            >
+              <box flexDirection="row" gap={1}>
+                <Show
+                  when={step.status === "RUNNING" && animationsEnabled}
+                  fallback={
+                    <text style={{ fg: getStepColor(step.status) }}>
+                      {step.status === "COMPLETED"
+                        ? "✓"
+                        : step.status === "RUNNING"
+                          ? "●"
+                          : step.status === "FAILED"
+                            ? "✗"
+                            : "○"}
+                    </text>
+                  }
+                >
+                  <spinner frames={SPINNER_FRAMES} interval={80} color={theme.warning} />
+                </Show>
+                <text style={{ fg: step.status === "RUNNING" ? theme.text : getStepColor(step.status) }}>
+                  {step.displayName}
+                </text>
+              </box>
+              <Show when={step.status === "RUNNING" && currentActivity()}>
+                <text style={{ fg: theme.textMuted }} paddingLeft={2}>
+                  └ {Locale.titlecase(currentActivity()!.tool)}{" "}
+                  {currentActivity()!.status === "completed" ? currentActivity()!.title : ""}
+                </text>
+              </Show>
+            </box>
+          )}
+        </For>
+      </box>
+      <Show when={status !== "RUNNING"}>
+        <text style={{ fg: statusColor() }}>
+          {statusIcon()} {status.toLowerCase()}
+        </text>
+      </Show>
+      <text fg={theme.text}>
+        {keybind.print("session_child_cycle")}
+        <span style={{ fg: theme.textMuted }}> view steps</span>
+      </text>
+    </BlockTool>
   )
 }
 

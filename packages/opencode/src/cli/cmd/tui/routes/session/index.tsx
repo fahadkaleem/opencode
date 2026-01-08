@@ -135,6 +135,10 @@ export function Session() {
     return messages().findLast((x) => x.role === "assistant")
   })
 
+  // Subagent session state
+  // Prompt visible by default in subagent sessions (for testing/steering agents)
+  const [subagentPromptVisible, setSubagentPromptVisible] = createSignal(true)
+
   const dimensions = useTerminalDimensions()
   const [sidebar, setSidebar] = kv.signal<"auto" | "hide">("sidebar", "hide")
   const [sidebarOpen, setSidebarOpen] = createSignal(false)
@@ -149,8 +153,10 @@ export function Session() {
 
   const wide = createMemo(() => dimensions().width > 120)
   const sidebarVisible = createMemo(() => {
-    if (session()?.parentID) return false
+    // FloMaster: Show sidebar in subagent sessions too (for todos, context info)
+    // Upstream hides sidebar for parentID sessions, but we want it visible for workflow steps
     if (sidebarOpen()) return true
+    if (sidebar() === "show") return true
     if (sidebar() === "auto" && wide()) return true
     return false
   })
@@ -199,12 +205,20 @@ export function Session() {
   let prompt: PromptRef
   const keybind = useKeybind()
 
-  // Allow exit when in child session (prompt is hidden)
+  // Handle keybinds in subagent (child) sessions
   const exit = useExit()
   useKeyboard((evt) => {
     if (!session()?.parentID) return
     if (keybind.match("app_exit", evt)) {
       exit()
+      return
+    }
+    // Toggle prompt visibility in subagent session (Ctrl+X i)
+    // Type assertion needed until SDK types are regenerated
+    if (keybind.match("session_subagent_prompt" as keyof typeof keybind.all, evt)) {
+      evt.preventDefault()
+      setSubagentPromptVisible(!subagentPromptVisible())
+      return
     }
   })
 
@@ -814,6 +828,17 @@ export function Session() {
         dialog.clear()
       },
     },
+    {
+      title: subagentPromptVisible() ? "Hide prompt in subagent" : "Show prompt in subagent",
+      value: "session.subagent.prompt",
+      keybind: "session_subagent_prompt" as "session_parent", // Type workaround until SDK regeneration
+      category: "Session",
+      disabled: !session()?.parentID,
+      onSelect: (dialog) => {
+        setSubagentPromptVisible(!subagentPromptVisible())
+        dialog.clear()
+      },
+    },
   ])
 
   const revertInfo = createMemo(() => session()?.revert)
@@ -887,7 +912,7 @@ export function Session() {
       <box flexDirection="row">
         <box flexGrow={1} paddingBottom={1} paddingTop={1} paddingLeft={2} paddingRight={2} gap={1}>
           <Show when={session()}>
-            <Show when={!sidebarVisible() || !wide()}>
+            <Show when={!sidebarVisible() || !wide() || session()?.parentID}>
               <Header />
             </Show>
             <scrollbox
@@ -1012,7 +1037,7 @@ export function Session() {
                 <QuestionPrompt request={questions()[0]} />
               </Show>
               <Prompt
-                visible={!session()?.parentID && permissions().length === 0 && questions().length === 0}
+                visible={(!session()?.parentID || subagentPromptVisible()) && permissions().length === 0 && questions().length === 0}
                 ref={(r) => {
                   prompt = r
                   promptRef.set(r)

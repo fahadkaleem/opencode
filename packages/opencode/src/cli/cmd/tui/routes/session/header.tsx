@@ -88,6 +88,12 @@ export function Header() {
               <text fg={theme.text}>
                 Next <span style={{ fg: theme.textMuted }}>{keybind.print("session_child_cycle")}</span>
               </text>
+              <text fg={theme.text}>
+                Prompt{" "}
+                <span style={{ fg: theme.textMuted }}>
+                  {keybind.print("session_subagent_prompt" as "session_parent")}
+                </span>
+              </text>
               <box flexGrow={1} flexShrink={1} />
               <ContextInfo context={context} cost={cost} />
             </box>

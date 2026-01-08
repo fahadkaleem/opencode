@@ -1,4 +1,4 @@
-import { useSync } from "@tui/context/sync"
+import { useSync, type WorkflowExecution } from "@tui/context/sync"
 import { createMemo, For, Show, Switch, Match } from "solid-js"
 import { createStore } from "solid-js/store"
 import { useTheme } from "../../context/theme"
@@ -11,6 +11,7 @@ import { useKeybind } from "../../context/keybind"
 import { useDirectory } from "../../context/directory"
 import { useKV } from "../../context/kv"
 import { TodoItem } from "../../component/todo-item"
+import { useRoute } from "../../context/route"
 
 export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
   const sync = useSync()
@@ -25,6 +26,44 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
     diff: true,
     todo: true,
     lsp: true,
+    workflows: true,
+  })
+
+  const route = useRoute()
+
+  // Workflow executions - show running, paused, and recently completed (within last hour)
+  const workflowExecutions = createMemo(() => {
+    const oneHourAgo = Date.now() - 60 * 60 * 1000
+    return Object.values(sync.data.workflow_executions)
+      .filter((e: WorkflowExecution) => {
+        // Always show running or paused
+        if (e.status === "RUNNING" || e.status === "PAUSED") return true
+        // Show completed/failed within last hour
+        if (e.status === "COMPLETED" || e.status === "FAILED") {
+          return new Date(e.updatedAt).getTime() > oneHourAgo
+        }
+        return false
+      })
+      .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+  })
+
+  // Find step info if this is a subagent session (part of a workflow)
+  const currentStepInfo = createMemo(() => {
+    if (!session()?.parentID) return null
+    // Search through workflow executions to find which step this session belongs to
+    for (const execution of Object.values(sync.data.workflow_executions)) {
+      const step = execution.steps.find((s) => s.sessionId === props.sessionID)
+      if (step) {
+        return {
+          workflowName: execution.workflowName,
+          stepId: step.stepId,
+          displayName: step.displayName,
+          status: step.status,
+          executionStatus: execution.status,
+        }
+      }
+    }
+    return null
   })
 
   // Sort MCP servers alphabetically for consistent display order
@@ -89,6 +128,30 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                 <text fg={theme.textMuted}>{session().share!.url}</text>
               </Show>
             </box>
+            {/* Show workflow step info for subagent sessions */}
+            <Show when={currentStepInfo()}>
+              <box>
+                <text fg={theme.text}>
+                  <b>Workflow Step</b>
+                </text>
+                <text fg={theme.textMuted}>
+                  {currentStepInfo()!.workflowName} → {currentStepInfo()!.displayName}
+                </text>
+                <text
+                  fg={
+                    {
+                      COMPLETED: theme.success,
+                      RUNNING: theme.warning,
+                      FAILED: theme.error,
+                      PENDING: theme.textMuted,
+                      SKIPPED: theme.textMuted,
+                    }[currentStepInfo()!.status]
+                  }
+                >
+                  {currentStepInfo()!.status.toLowerCase()}
+                </text>
+              </box>
+            </Show>
             <box>
               <text fg={theme.text}>
                 <b>Context</b>
@@ -217,6 +280,76 @@ export function Sidebar(props: { sessionID: string; overlay?: boolean }) {
                 </box>
                 <Show when={todo().length <= 2 || expanded.todo}>
                   <For each={todo()}>{(todo) => <TodoItem status={todo.status} content={todo.content} />}</For>
+                </Show>
+              </box>
+            </Show>
+            {/* Workflows Panel - FloMaster TUI integration (hide in subagent sessions) */}
+            <Show when={workflowExecutions().length > 0 && !currentStepInfo()}>
+              <box>
+                <box
+                  flexDirection="row"
+                  gap={1}
+                  onMouseDown={() => workflowExecutions().length > 2 && setExpanded("workflows", !expanded.workflows)}
+                >
+                  <Show when={workflowExecutions().length > 2}>
+                    <text fg={theme.text}>{expanded.workflows ? "▼" : "▶"}</text>
+                  </Show>
+                  <text fg={theme.text}>
+                    <b>Workflows</b>
+                    <Show when={!expanded.workflows && workflowExecutions().length > 2}>
+                      <span style={{ fg: theme.textMuted }}> ({workflowExecutions().length} active)</span>
+                    </Show>
+                  </text>
+                </box>
+                <Show when={workflowExecutions().length <= 2 || expanded.workflows}>
+                  <For each={workflowExecutions()}>
+                    {(execution) => (
+                      <box flexDirection="column" paddingLeft={1}>
+                        <text fg={theme.text}>
+                          {execution.workflowName}
+                          <span style={{ fg: theme.textMuted }}> ({execution.status.toLowerCase()})</span>
+                        </text>
+                        <For each={execution.steps}>
+                          {(step) => (
+                            <box
+                              flexDirection="row"
+                              gap={1}
+                              paddingLeft={1}
+                              onMouseUp={() => {
+                                if (step.sessionId) {
+                                  route.navigate({ type: "session", sessionID: step.sessionId })
+                                }
+                              }}
+                            >
+                              <text
+                                flexShrink={0}
+                                style={{
+                                  fg: {
+                                    COMPLETED: theme.success,
+                                    RUNNING: theme.warning,
+                                    FAILED: theme.error,
+                                    PENDING: theme.textMuted,
+                                    SKIPPED: theme.textMuted,
+                                  }[step.status],
+                                }}
+                              >
+                                {step.status === "COMPLETED"
+                                  ? "✓"
+                                  : step.status === "RUNNING"
+                                    ? "●"
+                                    : step.status === "FAILED"
+                                      ? "✗"
+                                      : "○"}
+                              </text>
+                              <text fg={step.status === "RUNNING" ? theme.text : theme.textMuted}>
+                                {step.displayName}
+                              </text>
+                            </box>
+                          )}
+                        </For>
+                      </box>
+                    )}
+                  </For>
                 </Show>
               </box>
             </Show>

@@ -18,6 +18,31 @@ import type {
   ProviderAuthMethod,
   VcsInfo,
 } from "@opencode-ai/sdk/v2"
+
+// Workflow types for TUI integration
+export type WorkflowDefinition = {
+  name: string
+  description: string
+  stepCount: number
+}
+
+export type WorkflowStepStatus = {
+  stepId: string
+  displayName: string
+  status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED"
+  sessionId?: string
+}
+
+export type WorkflowExecution = {
+  id: string
+  workflowName: string
+  status: "CREATED" | "RUNNING" | "PAUSED" | "COMPLETED" | "FAILED" | "CANCELLED"
+  parentSessionId?: string
+  steps: WorkflowStepStatus[]
+  currentStepId?: string
+  createdAt: string
+  updatedAt: string
+}
 import { createStore, produce, reconcile } from "solid-js/store"
 import { useSDK } from "@tui/context/sdk"
 import { Binary } from "@opencode-ai/util/binary"
@@ -73,6 +98,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       formatter: FormatterStatus[]
       vcs: VcsInfo | undefined
       path: Path
+      // Workflow state for FloMaster TUI integration
+      workflow_definitions: WorkflowDefinition[]
+      workflow_executions: { [executionId: string]: WorkflowExecution }
     }>({
       provider_next: {
         all: [],
@@ -100,6 +128,9 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
       formatter: [],
       vcs: undefined,
       path: { state: "", config: "", worktree: "", directory: "" },
+      // Workflow state initial values
+      workflow_definitions: [],
+      workflow_executions: {},
     })
 
     const sdk = useSDK()
@@ -304,6 +335,32 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
           setStore("vcs", { branch: event.properties.branch })
           break
         }
+
+        // Workflow events for FloMaster TUI integration
+        // These events are defined in @opencode-ai/flomaster and published via Bus
+        default: {
+          // Handle workflow events that aren't in the SDK type definitions yet
+          const eventType = event.type as string
+          if (eventType === "workflow.execution.updated") {
+            const props = (event as unknown as { properties: { execution: WorkflowExecution } }).properties
+            setStore("workflow_executions", props.execution.id, reconcile(props.execution))
+          } else if (eventType === "workflow.step.session_created") {
+            // Update step sessionId immediately when session is created
+            const props = (
+              event as unknown as {
+                properties: { executionId: string; stepId: string; sessionId: string; agentName: string }
+              }
+            ).properties
+            const execution = store.workflow_executions[props.executionId]
+            if (execution) {
+              const stepIndex = execution.steps.findIndex((s) => s.stepId === props.stepId)
+              if (stepIndex >= 0) {
+                setStore("workflow_executions", props.executionId, "steps", stepIndex, "sessionId", props.sessionId)
+              }
+            }
+          }
+          break
+        }
       }
     })
 
@@ -352,6 +409,28 @@ export const { use: useSync, provider: SyncProvider } = createSimpleContext({
             sdk.client.provider.auth().then((x) => setStore("provider_auth", reconcile(x.data ?? {}))),
             sdk.client.vcs.get().then((x) => setStore("vcs", reconcile(x.data))),
             sdk.client.path.get().then((x) => setStore("path", reconcile(x.data!))),
+            // FloMaster workflow bootstrap (gracefully handle missing endpoints)
+            fetch(`${sdk.url}/workflow/definitions`)
+              .then((res) => (res.ok ? res.json() : { data: [] }))
+              .then((x: { data?: WorkflowDefinition[] }) => setStore("workflow_definitions", reconcile(x.data ?? [])))
+              .catch(() => {
+                // FloMaster routes not available
+              }),
+            fetch(`${sdk.url}/workflow/executions`)
+              .then((res) => (res.ok ? res.json() : { data: [] }))
+              .then((x: { data?: Array<{ id: string } & WorkflowExecution> }) => {
+                const executions = (x.data ?? []).reduce(
+                  (acc, exec) => {
+                    acc[exec.id] = exec
+                    return acc
+                  },
+                  {} as Record<string, WorkflowExecution>,
+                )
+                setStore("workflow_executions", reconcile(executions))
+              })
+              .catch(() => {
+                // FloMaster routes not available
+              }),
           ]).then(() => {
             setStore("status", "complete")
           })

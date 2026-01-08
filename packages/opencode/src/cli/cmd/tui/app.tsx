@@ -18,6 +18,7 @@ import { DialogHelp } from "./ui/dialog-help"
 import { CommandProvider, useCommandDialog } from "@tui/component/dialog-command"
 import { DialogAgent } from "@tui/component/dialog-agent"
 import { DialogSessionList } from "@tui/component/dialog-session-list"
+import { DialogWorkflowSelect } from "@tui/component/dialog-workflow"
 import { KeybindProvider } from "@tui/context/keybind"
 import { ThemeProvider, useTheme } from "@tui/context/theme"
 import { Home } from "@tui/routes/home"
@@ -271,6 +272,30 @@ function App() {
     ),
   )
 
+  // Handle workflow step completion events for auto-navigation
+  // When a step completes and there's a next step, navigate to it
+  sdk.event.listen((e) => {
+    const event = e.details
+    const eventType = event.type as string
+    if (eventType === "workflow.step.completed") {
+      const props = (
+        event as unknown as {
+          properties: {
+            executionId: string
+            stepId: string
+            status: string
+            nextStepId?: string
+            nextSessionId?: string
+          }
+        }
+      ).properties
+      if (props.nextSessionId) {
+        // Auto-navigate to the next step's session
+        route.navigate({ type: "session", sessionID: props.nextSessionId })
+      }
+    }
+  })
+
   const connected = useConnected()
   command.register(() => [
     {
@@ -363,6 +388,54 @@ function App() {
       category: "Agent",
       onSelect: () => {
         dialog.replace(() => <DialogMcp />)
+      },
+    },
+    {
+      title: "Run workflow",
+      value: "workflow.run",
+      category: "Workflow",
+      disabled: sync.data.workflow_definitions.length === 0,
+      onSelect: () => {
+        if (sync.data.workflow_definitions.length === 0) {
+          toast.show({ message: "No workflows available", variant: "warning" })
+          return
+        }
+        dialog.replace(() => <DialogWorkflowSelect />)
+      },
+    },
+    {
+      title: "Continue workflow step",
+      value: "workflow.continue",
+      category: "Workflow",
+      onSelect: () => {
+        // Find current session and check if it's part of a workflow
+        if (route.data.type !== "session") {
+          toast.show({ message: "No active session", variant: "warning" })
+          return
+        }
+        const sessionID = route.data.sessionID
+        const currentSession = sync.data.session.find((s) => s.id === sessionID)
+        if (!currentSession?.parentID) {
+          toast.show({ message: "Current session is not part of a workflow", variant: "warning" })
+          return
+        }
+
+        // Inject continue prompt into current session
+        const continuePrompt =
+          "Reflect on your original instructions and continue where you left off. Complete the current step."
+
+        const model = local.model.current()
+        sdk.client.session
+          .prompt({
+            sessionID,
+            agent: local.agent.current().name,
+            model: model ? { providerID: model.providerID, modelID: model.modelID } : undefined,
+            parts: [{ type: "text", text: continuePrompt }],
+          })
+          .catch((err: Error) => {
+            toast.show({ message: `Failed to continue: ${err.message}`, variant: "error" })
+          })
+        dialog.clear()
       },
     },
     {

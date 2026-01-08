@@ -236,6 +236,9 @@
         "flomaster": "./bin/flomaster",
       },
       "dependencies": {
+        "@hono/zod-validator": "catalog:",
+        "hono": "catalog:",
+        "hono-openapi": "catalog:",
         "opencode": "workspace:*",
         "xstate": "^5.19.0",
         "yargs": "18.0.0",
@@ -339,6 +342,7 @@
         "vscode-jsonrpc": "8.2.1",
         "web-tree-sitter": "0.25.10",
         "xdg-basedir": "5.1.0",
+        "xstate": "^5.19.0",
         "yargs": "18.0.0",
         "zod": "catalog:",
         "zod-to-json-schema": "3.24.5",

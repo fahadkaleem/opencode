@@ -455,6 +455,16 @@ export function Autocomplete(props: {
         onSelect: () => command.show(),
       },
       {
+        display: "/workflow",
+        description: "run a workflow",
+        onSelect: () => command.trigger("workflow.run"),
+      },
+      {
+        display: "/wcontinue",
+        description: "continue paused workflow step",
+        onSelect: () => command.trigger("workflow.continue"),
+      },
+      {
         display: "/exit",
         aliases: ["/quit", "/q"],
         description: "exit the app",

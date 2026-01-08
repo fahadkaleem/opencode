@@ -272,11 +272,12 @@ function App() {
     ),
   )
 
-  // Handle workflow step completion events for auto-navigation
-  // When a step completes and there's a next step, navigate to it
+  // Handle workflow step events for auto-navigation
   sdk.event.listen((e) => {
     const event = e.details
     const eventType = event.type as string
+
+    // When a step completes and there's a next step session already known, navigate to it
     if (eventType === "workflow.step.completed") {
       const props = (
         event as unknown as {
@@ -290,8 +291,35 @@ function App() {
         }
       ).properties
       if (props.nextSessionId) {
-        // Auto-navigate to the next step's session
         route.navigate({ type: "session", sessionID: props.nextSessionId })
+      }
+    }
+
+    // When a new step session is created, auto-navigate if we're viewing this workflow
+    // This handles the case where nextSessionId wasn't available at step completion
+    if (eventType === "workflow.step.session_created") {
+      const props = (
+        event as unknown as {
+          properties: {
+            executionId: string
+            stepId: string
+            sessionId: string
+            agentName: string
+          }
+        }
+      ).properties
+
+      // Only auto-navigate if we're currently viewing a session
+      if (route.data.type !== "session") return
+
+      const currentSessionId = route.data.sessionID
+      const exec = sync.data.workflow_executions[props.executionId]
+      if (!exec) return
+
+      // Check if current session belongs to this workflow execution
+      const isViewingThisWorkflow = exec.steps.some((s) => s.sessionId === currentSessionId)
+      if (isViewingThisWorkflow) {
+        route.navigate({ type: "session", sessionID: props.sessionId })
       }
     }
   })

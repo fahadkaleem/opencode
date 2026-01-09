@@ -1,5 +1,6 @@
 ---
 mode: subagent
+model: opencode/gemini-3-flash
 description: Implementation planning agent with read access and limited write to plan files
 permission:
   "*": deny

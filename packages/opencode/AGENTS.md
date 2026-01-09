@@ -8,6 +8,19 @@
 - **Test**: `bun test` (runs all tests)
 - **Single test**: `bun test test/tool/tool.test.ts` (specific test file)
 
+## FloMaster (Workflow Orchestration)
+
+FloMaster is a workflow orchestration system located in `src/flomaster`. It uses a DAG-based execution model driven by XState v5.
+
+- **Engine**: `src/flomaster/orchestrator/engine/workflowEngine.ts`
+- **Machine**: `src/flomaster/orchestrator/machine/workflowMachine.ts`
+- **State**: `src/flomaster/state/stateManager.ts`
+
+### Build/Test Commands (FloMaster)
+
+- **Test all**: `bun test src/flomaster`
+- **Single test**: `bun test src/flomaster/orchestrator/engine/factory.test.ts`
+
 ## Code Style
 
 - **Runtime**: Bun with TypeScript ESM modules

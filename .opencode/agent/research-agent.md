@@ -1,6 +1,6 @@
 ---
 mode: subagent
-model: anthropic/claude-sonnet-4-20250514
+model: opencode/gemini-3-flash
 steps: 10
 description: Read-only codebase exploration and analysis for workflow research steps
 permission:

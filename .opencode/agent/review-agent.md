@@ -1,5 +1,6 @@
 ---
 mode: subagent
+model: opencode/gemini-3-flash
 description: Code review agent with read-only access for analyzing implementation quality
 permission:
   "*": deny
